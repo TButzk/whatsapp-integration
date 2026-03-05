@@ -1,0 +1,8 @@
+# Arquivo com segredos reais — nunca versionar
+.env
+
+# Certificados TLS
+certs/
+
+# Logs locais
+*.log
