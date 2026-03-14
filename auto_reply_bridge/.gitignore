@@ -1,0 +1,15 @@
+# Segredos
+.env
+
+# Dependências Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Banco vetorial Chroma (gerado localmente pelo ingest)
+data/
+
+# Cache pytest
+.pytest_cache/

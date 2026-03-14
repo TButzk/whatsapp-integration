@@ -11,6 +11,12 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request
 
+import chat_history
+import intent as intent_mod
+import shopify_mock
+from intent import Intent
+from rag import format_rag_context, search_documents
+
 
 load_dotenv(override=True)
 
@@ -30,11 +36,15 @@ CHATWOOT_API_TOKEN = os.getenv("CHATWOOT_API_TOKEN", "")
 CHATWOOT_WEBHOOK_SECRET = os.getenv("CHATWOOT_WEBHOOK_SECRET", "")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3")
+OLLAMA_FALLBACK_MODEL = os.getenv("OLLAMA_FALLBACK_MODEL", "phi3:medium")
 OLLAMA_SYSTEM_PROMPT = os.getenv(
     "OLLAMA_SYSTEM_PROMPT",
     "Voce e um atendente virtual objetivo e educado. Responda em portugues do Brasil.",
 )
-OLLAMA_REQUEST_TIMEOUT = int(os.getenv("OLLAMA_REQUEST_TIMEOUT", "90"))
+OLLAMA_MAIN_TIMEOUT = int(os.getenv("OLLAMA_MAIN_TIMEOUT", "90"))
+OLLAMA_FALLBACK_TIMEOUT = int(os.getenv("OLLAMA_FALLBACK_TIMEOUT", "60"))
+# Keep backward-compatible alias
+OLLAMA_REQUEST_TIMEOUT = int(os.getenv("OLLAMA_REQUEST_TIMEOUT", str(OLLAMA_MAIN_TIMEOUT)))
 MAX_RESPONSE_CHARS = int(os.getenv("MAX_RESPONSE_CHARS", "1200"))
 IGNORE_BOT_PREFIX = os.getenv("IGNORE_BOT_PREFIX", "!botoff")
 
@@ -105,19 +115,118 @@ def should_reply(payload: dict[str, Any]) -> tuple[bool, str]:
     return True, "ok"
 
 
+def _call_ollama(messages: list[dict[str, str]], model: str, timeout: int) -> str:
+    """Call the Ollama chat API and return the response text."""
+    response = requests.post(
+        f"{OLLAMA_BASE_URL}/api/chat",
+        json={"model": model, "stream": False, "messages": messages},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    data = response.json()
+    content = ((data.get("message") or {}).get("content") or "").strip()
+    if not content:
+        raise ValueError("Ollama returned an empty response")
+    return content[:MAX_RESPONSE_CHARS]
+
+
 def build_prompt(payload: dict[str, Any]) -> list[dict[str, str]]:
+    """Phase 4 orchestration: build the full prompt for the LLM.
+
+    1. Detect intent
+    2. Collect conversation history
+    3. Consult Shopify mock (ORDER / PRODUCT intents)
+    4. Consult RAG (INSTITUTIONAL intent)
+    5. Compose final messages list
+    """
     content = (payload.get("content") or "").strip()
     contact = payload.get("contact") or {}
     conversation = payload.get("conversation") or {}
+    account = payload.get("account") or {}
     contact_name = contact.get("name") or "cliente"
     channel = conversation.get("channel") or "whatsapp"
+    account_id = account.get("id")
+    conversation_id = conversation.get("id")
 
-    user_message = (
-        f"Canal: {channel}\n"
-        f"Cliente: {contact_name}\n"
-        f"Mensagem do cliente: {content}\n\n"
-        "Responda de forma objetiva e util para atendimento. "
-        "Se faltar contexto, faca uma pergunta curta antes de assumir algo."
+    t0 = time.time()
+
+    # ---- 1. Detect intent -----------------------------------------------
+    detected_intent = intent_mod.detect_intent(content)
+
+    # ---- 2. Conversation history ----------------------------------------
+    history: list[dict[str, str]] = []
+    if account_id and conversation_id:
+        try:
+            history = chat_history.fetch_history(
+                int(account_id), int(conversation_id)
+            )
+        except Exception as exc:
+            logger.warning("History fetch failed: %s", exc)
+
+    history_context = chat_history.format_history_context(history)
+
+    # ---- 3. Tool context (Shopify / RAG) --------------------------------
+    tool_context = ""
+    rag_chunks_count = 0
+
+    if detected_intent == Intent.ORDER:
+        order_number = intent_mod.extract_order_number(content)
+        if order_number:
+            order = shopify_mock.get_order_status(order_number)
+            if order:
+                tool_context = shopify_mock.format_order_response(order)
+            else:
+                tool_context = (
+                    f"Nenhum pedido encontrado com o número #{order_number}. "
+                    "Verifique se o número está correto."
+                )
+        else:
+            tool_context = (
+                "Para consultar um pedido, por favor informe o número do pedido."
+            )
+
+    elif detected_intent == Intent.PRODUCT:
+        products = shopify_mock.search_products(content, limit=3)
+        tool_context = shopify_mock.format_products_response(products, content)
+
+    elif detected_intent == Intent.INSTITUTIONAL:
+        try:
+            chunks = search_documents(content)
+            rag_chunks_count = len(chunks)
+            tool_context = format_rag_context(chunks)
+        except Exception as exc:
+            logger.warning("RAG search failed: %s", exc)
+
+    # ---- 4. Build user message ------------------------------------------
+    sections: list[str] = [
+        f"Canal: {channel}",
+        f"Cliente: {contact_name}",
+    ]
+
+    if history_context:
+        sections.append(f"Histórico recente da conversa:\n{history_context}")
+
+    if tool_context:
+        sections.append(f"Dados disponíveis para esta resposta:\n{tool_context}")
+
+    sections.append(f"Mensagem atual do cliente: {content}")
+    sections.append(
+        "Responda de forma objetiva e útil. "
+        "Se faltar contexto, faça uma pergunta curta. "
+        "Não invente dados que não foram fornecidos acima."
+    )
+
+    user_message = "\n\n".join(sections)
+
+    # ---- 5. Metrics log --------------------------------------------------
+    prompt_chars = len(OLLAMA_SYSTEM_PROMPT) + len(user_message)
+    logger.info(
+        "Prompt built | intent=%s history_msgs=%d rag_chunks=%d prompt_chars=%d elapsed=%.2fs",
+        detected_intent,
+        len(history),
+        rag_chunks_count,
+        prompt_chars,
+        time.time() - t0,
     )
 
     return [
@@ -127,21 +236,31 @@ def build_prompt(payload: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def generate_reply(payload: dict[str, Any]) -> str:
-    response = requests.post(
-        f"{OLLAMA_BASE_URL}/api/chat",
-        json={
-            "model": OLLAMA_MODEL,
-            "stream": False,
-            "messages": build_prompt(payload),
-        },
-        timeout=OLLAMA_REQUEST_TIMEOUT,
+    """Generate a reply, falling back to OLLAMA_FALLBACK_MODEL on error."""
+    messages = build_prompt(payload)
+    t0 = time.time()
+
+    try:
+        reply = _call_ollama(messages, OLLAMA_MODEL, OLLAMA_MAIN_TIMEOUT)
+        logger.info(
+            "Reply generated | model=%s total_time=%.2fs", OLLAMA_MODEL, time.time() - t0
+        )
+        return reply
+    except Exception as primary_exc:
+        logger.warning(
+            "Primary model %s failed (%s); trying fallback %s",
+            OLLAMA_MODEL,
+            primary_exc,
+            OLLAMA_FALLBACK_MODEL,
+        )
+
+    reply = _call_ollama(messages, OLLAMA_FALLBACK_MODEL, OLLAMA_FALLBACK_TIMEOUT)
+    logger.info(
+        "Reply generated | model=%s (fallback) total_time=%.2fs",
+        OLLAMA_FALLBACK_MODEL,
+        time.time() - t0,
     )
-    response.raise_for_status()
-    data = response.json()
-    content = ((data.get("message") or {}).get("content") or "").strip()
-    if not content:
-        raise ValueError("Ollama returned an empty response")
-    return content[:MAX_RESPONSE_CHARS]
+    return reply
 
 
 def send_chatwoot_message(payload: dict[str, Any], reply_text: str) -> None:
