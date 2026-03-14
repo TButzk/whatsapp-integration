@@ -13,6 +13,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 # ---------------------------------------------------------------------------
 # Ensure the bridge package is importable when pytest is run from the repo root
@@ -564,7 +565,3 @@ class TestGenerateReplyFallback:
                 bridge_app.generate_reply(self._payload())
 
 
-# ---------------------------------------------------------------------------
-# Missing import needed for fallback test
-# ---------------------------------------------------------------------------
-import requests  # noqa: E402

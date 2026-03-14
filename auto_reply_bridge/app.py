@@ -167,6 +167,7 @@ def build_prompt(payload: dict[str, Any]) -> list[dict[str, str]]:
 
     # ---- 3. Tool context (Shopify / RAG) --------------------------------
     tool_context = ""
+    rag_chunks_count = 0
 
     if detected_intent == Intent.ORDER:
         order_number = intent_mod.extract_order_number(content)
@@ -191,6 +192,7 @@ def build_prompt(payload: dict[str, Any]) -> list[dict[str, str]]:
     elif detected_intent == Intent.INSTITUTIONAL:
         try:
             chunks = search_documents(content)
+            rag_chunks_count = len(chunks)
             tool_context = format_rag_context(chunks)
         except Exception as exc:
             logger.warning("RAG search failed: %s", exc)
@@ -222,7 +224,7 @@ def build_prompt(payload: dict[str, Any]) -> list[dict[str, str]]:
         "Prompt built | intent=%s history_msgs=%d rag_chunks=%d prompt_chars=%d elapsed=%.2fs",
         detected_intent,
         len(history),
-        len(tool_context.split("---")) if tool_context else 0,
+        rag_chunks_count,
         prompt_chars,
         time.time() - t0,
     )

@@ -186,7 +186,7 @@ def ingest_documents(docs_path: Optional[str] = None) -> int:
             continue
 
         chunks = _chunk_text(content)
-        file_id = hashlib.md5(str(file_path).encode()).hexdigest()  # noqa: S324
+        file_id = hashlib.sha256(str(file_path).encode()).hexdigest()
 
         for i, chunk in enumerate(chunks):
             chunk_id = f"{file_id}_{i}"
