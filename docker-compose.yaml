@@ -1,22 +1,35 @@
 # =============================================================================
-# docker-compose.yaml — Chatwoot Community Edition
+# docker-compose.yaml — Chatwoot Community Edition + Ollama Local
 # Plataforma de atendimento via WhatsApp Business (Cloud API da Meta)
 #
-# Requisitos do host (Ubuntu 22.04 LTS):
-#   - Mínimo 2 vCPU / 4 GB RAM
-#   - Configure ao menos 1 GB de Swap no SO host para absorver picos do
-#     Sidekiq (worker), que apresenta vazamentos graduais de memória sob
-#     uso intenso. Exemplo:
-#       sudo fallocate -l 1G /swapfile
-#       sudo chmod 600 /swapfile
-#       sudo mkswap /swapfile
-#       sudo swapon /swapfile
-#       echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+# Configuração para Windows com Docker Desktop + Ollama nativo no host:
+#   - Chatwoot rodando em Docker (2 GB máximo)
+#   - Ollama rodando nativo no Windows (fora do Docker)
+#   - Integração via http://host.docker.internal:11434
+#
+# Distribuição de memória (máx 2 GB):
+#   - PostgreSQL: 600 MB
+#   - Chatwoot Web: 600 MB
+#   - Sidekiq: 400 MB
+#   - Redis: 256 MB (memória limite do Redis)
+#   - Nginx + Cloudflared: ~100 MB (combinado)
+#   Total estimado: ~1.95 GB
+#
+# Requisitos do host Windows:
+#   - Docker Desktop com mínimo 2 GB alocado (Settings → Resources → Memory)
+#   - Ollama executando em https://ollama.ai (não dentro do Docker)
+#   - Gemma3 pré-carregado em Ollama (ollama pull gemma3)
 #
 # Uso rápido:
 #   cp .env.example .env   # preencha os valores
-#   bash setup.sh          # inicializa banco e sobe os serviços
+#   ollama pull gemma3     # no prompt do Windows, fora do Docker
+#   ollama serve           # inicie o Ollama no Windows
+#   bash setup.sh          # em terminal separado, suba os containers
 # =============================================================================
+# NOTA: Qualquer mudança nos limites de memória abaixo (deploy.resources.limits)
+# deve ser testada para garantir que a soma não exceda o disponível no Docker Desktop.
+# =============================================================================
+
 
 # ---------------------------------------------------------------------------
 # Volumes nomeados — dados persistentes fora dos contêineres
@@ -42,7 +55,7 @@ services:
   # PostgreSQL 14 — banco de dados relacional
   # -------------------------------------------------------------------------
   postgres:
-    image: postgres:14-alpine
+    image: pgvector/pgvector:pg14
     restart: unless-stopped
     environment:
       POSTGRES_DB: chatwoot_production
@@ -52,6 +65,10 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - chatwoot_net
+    deploy:
+      resources:
+        limits:
+          memory: 600M
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U chatwoot -d chatwoot_production"]
       interval: 10s
@@ -73,6 +90,10 @@ services:
       - redis_data:/data
     networks:
       - chatwoot_net
+    deploy:
+      resources:
+        limits:
+          memory: 300M
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
@@ -91,10 +112,18 @@ services:
       # Sobrescreve o RAILS_ENV para garantir produção
       RAILS_ENV: production
       NODE_ENV: production
+      # Endpoint do Ollama rodando no host Windows (fora do Docker)
+      LLM_ENDPOINT: http://host.docker.internal:11434
     volumes:
       - chatwoot_storage:/app/storage
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - chatwoot_net
+    deploy:
+      resources:
+        limits:
+          memory: 600M
     depends_on:
       postgres:
         condition: service_healthy
@@ -120,10 +149,18 @@ services:
     environment:
       RAILS_ENV: production
       NODE_ENV: production
+      # Endpoint do Ollama rodando no host Windows (fora do Docker)
+      LLM_ENDPOINT: http://host.docker.internal:11434
     volumes:
       - chatwoot_storage:/app/storage
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - chatwoot_net
+    deploy:
+      resources:
+        limits:
+          memory: 400M
     depends_on:
       postgres:
         condition: service_healthy
@@ -139,14 +176,19 @@ services:
     image: nginx:1.25-alpine
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
+      - "65271:80"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       # Monte certificados TLS aqui quando disponíveis:
-      # - ./certs:/etc/nginx/certs:ro
+      - ./certs:/etc/nginx/certs:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - chatwoot_net
+    deploy:
+      resources:
+        limits:
+          memory: 50M
     depends_on:
       - chatwoot
 
@@ -164,5 +206,9 @@ services:
     command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
     networks:
       - chatwoot_net
+    deploy:
+      resources:
+        limits:
+          memory: 50M
     depends_on:
       - nginx
