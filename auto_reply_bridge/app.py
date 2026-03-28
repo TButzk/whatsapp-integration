@@ -16,10 +16,27 @@ _DOTENV_PATH = Path(__file__).resolve().with_name(".env")
 load_dotenv(dotenv_path=_DOTENV_PATH, override=True)
 
 import chat_history
+import importlib
 import intent as intent_mod
-import shopify_mock
 from intent import Intent
 from rag import format_rag_context, ingest_documents, search_documents
+
+# ---------------------------------------------------------------------------
+# Shopify module — selected at startup based on SHOPIFY_MODE env variable.
+# Supported values:
+#   mock  (default) — local mock data, no network calls
+#   mcp             — Shopify Storefront MCP Server (requires SHOPIFY_MCP_ENDPOINT
+#                     and SHOPIFY_STOREFRONT_TOKEN)
+# ---------------------------------------------------------------------------
+_SHOPIFY_MODE = os.getenv("SHOPIFY_MODE", "mock").lower()
+if _SHOPIFY_MODE not in ("mock", "mcp"):
+    import warnings
+    warnings.warn(
+        f"Unknown SHOPIFY_MODE={_SHOPIFY_MODE!r}; falling back to 'mock'.",
+        stacklevel=1,
+    )
+    _SHOPIFY_MODE = "mock"
+_shopify = importlib.import_module("shopify_mcp" if _SHOPIFY_MODE == "mcp" else "shopify_mock")
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -268,9 +285,9 @@ def build_prompt(payload: dict[str, Any]) -> tuple[list[dict[str, str]], dict[st
     if detected_intent == Intent.ORDER:
         order_number = intent_mod.extract_order_number(content)
         if order_number:
-            order = shopify_mock.get_order_status(order_number)
+            order = _shopify.get_order_status(order_number)
             if order:
-                shopify_context = shopify_mock.format_order_response(order)
+                shopify_context = _shopify.format_order_response(order)
             else:
                 shopify_context = (
                     f"Nenhum pedido encontrado com o número #{order_number}. "
@@ -282,8 +299,8 @@ def build_prompt(payload: dict[str, Any]) -> tuple[list[dict[str, str]], dict[st
             )
 
     elif detected_intent == Intent.PRODUCT:
-        products = shopify_mock.search_products(content, limit=3)
-        shopify_context = shopify_mock.format_products_response(products, content)
+        products = _shopify.search_products(content, limit=3)
+        shopify_context = _shopify.format_products_response(products, content)
 
     context_parts = [part for part in (shopify_context, rag_context) if part]
     tool_context = "\n\n---\n\n".join(context_parts)

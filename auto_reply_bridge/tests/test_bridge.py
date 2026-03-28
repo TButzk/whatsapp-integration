@@ -11,6 +11,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -236,6 +237,267 @@ class TestShopifyMock:
         products = search_products("camiseta")
         text = format_products_response(products[:3], "camiseta")
         assert "camiseta" in text.lower()
+
+
+# ===========================================================================
+# Phase 2a — shopify_mcp
+# ===========================================================================
+
+class TestShopifyMCP:
+    """Tests for shopify_mcp module (Storefront MCP client)."""
+
+    def _mock_mcp_response(self, result: Any) -> MagicMock:
+        """Return a mock requests.Response with a JSON-RPC 2.0 success body."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"jsonrpc": "2.0", "id": "x", "result": result}
+        return mock_resp
+
+    # ------------------------------------------------------------------
+    # _mcp_post helper
+    # ------------------------------------------------------------------
+
+    def test_mcp_post_returns_result_on_success(self):
+        import shopify_mcp
+        ok_resp = self._mock_mcp_response({"protocolVersion": "2024-11-05"})
+        with patch("shopify_mcp.requests.post", return_value=ok_resp):
+            result = shopify_mcp._mcp_post("initialize", {})
+        assert result == {"protocolVersion": "2024-11-05"}
+
+    def test_mcp_post_returns_none_on_http_error(self):
+        import shopify_mcp
+        with patch(
+            "shopify_mcp.requests.post",
+            side_effect=requests.exceptions.ConnectionError("refused"),
+        ):
+            result = shopify_mcp._mcp_post("initialize", {})
+        assert result is None
+
+    def test_mcp_post_returns_none_on_jsonrpc_error(self):
+        import shopify_mcp
+        error_resp = MagicMock()
+        error_resp.raise_for_status = MagicMock()
+        error_resp.json.return_value = {
+            "jsonrpc": "2.0",
+            "id": "x",
+            "error": {"code": -32601, "message": "Method not found"},
+        }
+        with patch("shopify_mcp.requests.post", return_value=error_resp):
+            result = shopify_mcp._mcp_post("unknown_method", {})
+        assert result is None
+
+    # ------------------------------------------------------------------
+    # _initialize
+    # ------------------------------------------------------------------
+
+    def test_initialize_returns_true_on_success(self):
+        import shopify_mcp
+        ok_resp = self._mock_mcp_response({"protocolVersion": "2024-11-05"})
+        with patch("shopify_mcp.requests.post", return_value=ok_resp):
+            assert shopify_mcp._initialize() is True
+
+    def test_initialize_returns_false_on_failure(self):
+        import shopify_mcp
+        with patch(
+            "shopify_mcp.requests.post",
+            side_effect=requests.exceptions.Timeout("timeout"),
+        ):
+            assert shopify_mcp._initialize() is False
+
+    # ------------------------------------------------------------------
+    # search_products
+    # ------------------------------------------------------------------
+
+    def _make_search_response(self, products: list[dict]) -> MagicMock:
+        """Helper: mock both initialize and tools/call responses."""
+        init_resp = self._mock_mcp_response({"protocolVersion": "2024-11-05"})
+        tool_resp = self._mock_mcp_response(
+            {
+                "content": [
+                    {"type": "text", "text": json.dumps(products)},
+                ],
+            }
+        )
+        return [init_resp, tool_resp]
+
+    def test_search_products_returns_normalised_list(self):
+        import shopify_mcp
+        raw_products = [
+            {
+                "id": "gid://shopify/Product/1",
+                "title": "Camiseta Básica",
+                "availableForSale": True,
+                "tags": ["vestuario", "camiseta"],
+                "onlineStoreUrl": "https://loja.example.com/camiseta",
+                "priceRange": {
+                    "minVariantPrice": {"amount": "59.90", "currencyCode": "BRL"}
+                },
+            }
+        ]
+        side_effects = self._make_search_response(raw_products)
+        with patch("shopify_mcp.requests.post", side_effect=side_effects):
+            results = shopify_mcp.search_products("camiseta")
+
+        assert len(results) == 1
+        assert results[0]["name"] == "Camiseta Básica"
+        assert results[0]["available"] is True
+        assert "59" in results[0]["price"]
+
+    def test_search_products_returns_empty_when_init_fails(self):
+        import shopify_mcp
+        with patch(
+            "shopify_mcp.requests.post",
+            side_effect=requests.exceptions.ConnectionError("down"),
+        ):
+            results = shopify_mcp.search_products("camiseta")
+        assert results == []
+
+    def test_search_products_returns_empty_when_tool_returns_nothing(self):
+        import shopify_mcp
+        init_resp = self._mock_mcp_response({"protocolVersion": "2024-11-05"})
+        empty_resp = self._mock_mcp_response({"content": []})
+        with patch(
+            "shopify_mcp.requests.post", side_effect=[init_resp, empty_resp]
+        ):
+            results = shopify_mcp.search_products("xyz_not_found")
+        assert results == []
+
+    def test_search_products_respects_limit(self):
+        import shopify_mcp
+        raw_products = [
+            {"id": str(i), "title": f"Produto {i}", "availableForSale": True}
+            for i in range(10)
+        ]
+        side_effects = self._make_search_response(raw_products)
+        with patch("shopify_mcp.requests.post", side_effect=side_effects):
+            results = shopify_mcp.search_products("produto", limit=3)
+        assert len(results) <= 3
+
+    def test_search_products_handles_nested_edges(self):
+        """Storefront API may wrap products in edges/node GraphQL pattern."""
+        import shopify_mcp
+        nested_graphql_response = {"products": [{"node": {"id": "p1", "title": "Calça Jeans"}}]}
+        init_resp = self._mock_mcp_response({"protocolVersion": "2024-11-05"})
+        tool_resp = self._mock_mcp_response(
+            {"content": [{"type": "text", "text": json.dumps(nested_graphql_response)}]}
+        )
+        with patch("shopify_mcp.requests.post", side_effect=[init_resp, tool_resp]):
+            results = shopify_mcp.search_products("calca")
+        assert len(results) == 1
+        assert results[0]["name"] == "Calça Jeans"
+
+    def test_search_products_falls_back_to_text_entry_on_non_json(self):
+        """If MCP returns plain text, wrap it as a single product entry."""
+        import shopify_mcp
+        init_resp = self._mock_mcp_response({"protocolVersion": "2024-11-05"})
+        tool_resp = self._mock_mcp_response(
+            {"content": [{"type": "text", "text": "Tênis disponível em 3 cores"}]}
+        )
+        with patch("shopify_mcp.requests.post", side_effect=[init_resp, tool_resp]):
+            results = shopify_mcp.search_products("tenis")
+        assert len(results) == 1
+        assert "Tênis" in results[0]["name"]
+
+    # ------------------------------------------------------------------
+    # get_order_status
+    # ------------------------------------------------------------------
+
+    def test_get_order_status_always_returns_none(self):
+        """Storefront MCP does not expose private order data."""
+        import shopify_mcp
+        assert shopify_mcp.get_order_status("1001") is None
+        assert shopify_mcp.get_order_status("9999") is None
+
+    # ------------------------------------------------------------------
+    # format_products_response
+    # ------------------------------------------------------------------
+
+    def test_format_products_response_empty(self):
+        import shopify_mcp
+        text = shopify_mcp.format_products_response([], "tênis")
+        assert "tênis" in text
+        assert "Não encontrei" in text
+
+    def test_format_products_response_with_results(self):
+        import shopify_mcp
+        products = [
+            {
+                "id": "p1",
+                "name": "Camiseta Básica",
+                "price": "BRL 59,90",
+                "available": True,
+                "category": "vestuario",
+                "url": "https://loja.example.com/camiseta",
+            }
+        ]
+        text = shopify_mcp.format_products_response(products, "camiseta")
+        assert "Camiseta Básica" in text
+        assert "disponível" in text
+
+    def test_format_products_response_unavailable(self):
+        import shopify_mcp
+        products = [
+            {
+                "id": "p1",
+                "name": "Boné Esgotado",
+                "price": "BRL 49,90",
+                "available": False,
+                "category": "acessorio",
+                "url": "",
+            }
+        ]
+        text = shopify_mcp.format_products_response(products, "boné")
+        assert "indisponível" in text
+
+    # ------------------------------------------------------------------
+    # app.py MCP mode integration
+    # ------------------------------------------------------------------
+
+    def test_app_uses_mcp_module_when_mode_is_mcp(self, monkeypatch):
+        """When SHOPIFY_MODE=mcp, app._shopify should be shopify_mcp."""
+        import shopify_mcp
+        import app as bridge_app
+        monkeypatch.setattr(bridge_app, "_shopify", shopify_mcp)
+        assert bridge_app._shopify is shopify_mcp
+
+    def test_build_prompt_mcp_product_uses_mcp_module(self, monkeypatch):
+        """build_prompt should call _shopify.search_products (MCP) in product intent."""
+        import app as bridge_app
+        import shopify_mcp
+
+        fake_products = [
+            {
+                "id": "p1",
+                "name": "Camiseta MCP",
+                "price": "BRL 79,90",
+                "available": True,
+                "category": "vestuario",
+                "url": "https://mcp-store.example.com/camiseta",
+            }
+        ]
+
+        monkeypatch.setattr(bridge_app, "_shopify", shopify_mcp)
+        with patch("shopify_mcp.search_products", return_value=fake_products) as mock_search:
+            with patch("app.search_documents", return_value=[]):
+                payload = _make_payload(content="Vocês têm camiseta?")
+                messages, _trace = bridge_app.build_prompt(payload)
+
+        mock_search.assert_called_once()
+        user_msg = messages[1]["content"]
+        assert "Camiseta MCP" in user_msg
+
+    def test_build_prompt_mcp_order_shows_not_found(self, monkeypatch):
+        """In MCP mode, order lookup returns None → 'Nenhum pedido encontrado'."""
+        import app as bridge_app
+        import shopify_mcp
+
+        monkeypatch.setattr(bridge_app, "_shopify", shopify_mcp)
+        with patch("app.search_documents", return_value=[]):
+            payload = _make_payload(content="Qual o status do pedido #1001?")
+            messages, _trace = bridge_app.build_prompt(payload)
+
+        user_msg = messages[1]["content"]
+        assert "Nenhum pedido encontrado" in user_msg
 
 
 # ===========================================================================
