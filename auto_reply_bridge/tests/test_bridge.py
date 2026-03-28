@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -64,6 +65,18 @@ class TestChatHistory:
         messages = [
             {"message_type": "incoming", "private": False, "content": "Oi", "created_at": 1},
             {"message_type": "outgoing", "private": False, "content": "Olá!", "created_at": 2, "sender": {"type": "agent"}},
+        ]
+        result = _filter_and_format(messages)
+        assert len(result) == 2
+        assert result[0]["role"] == "Cliente"
+        assert result[1]["role"] == "Atendente"
+
+    def test_filter_accepts_numeric_message_types(self):
+        from chat_history import _filter_and_format
+
+        messages = [
+            {"message_type": 0, "private": False, "content": "Oi", "created_at": 1, "sender_type": "contact"},
+            {"message_type": 1, "private": False, "content": "Olá!", "created_at": 2, "sender_type": "user"},
         ]
         result = _filter_and_format(messages)
         assert len(result) == 2
@@ -207,6 +220,7 @@ class TestShopifyMock:
     def test_format_order_response(self):
         from shopify_mock import format_order_response, get_order_status
         order = get_order_status("1002")
+        assert order is not None
         text = format_order_response(order)
         assert "1002" in text
         assert "BR123456789BR" in text
@@ -293,11 +307,80 @@ class TestRAG:
         # Each chunk must be non-empty
         assert all(c for c in chunks)
 
+    def test_chunk_text_with_offsets(self):
+        from rag import _chunk_text_with_offsets
+
+        text = "Primeiro paragrafo.\n\nSegundo bloco com Recife no final."
+        chunks = _chunk_text_with_offsets(text, size=30, overlap=5)
+
+        assert len(chunks) >= 2
+        for chunk, start, end in chunks:
+            assert chunk == text[start:end].strip()
+            assert end > start
+
     def test_search_documents_disabled(self, monkeypatch):
         import rag
         monkeypatch.setattr(rag, "RAG_ENABLED", False)
         result = rag.search_documents("troca")
         assert result == []
+
+    def test_search_documents_detailed_expands_source_context(self, monkeypatch):
+        import rag
+
+        class FakeCollection:
+            def count(self):
+                return 3
+
+            def query(self, **kwargs):
+                return {
+                    "documents": [["Recife no final"]],
+                    "metadatas": [[{
+                        "source": "empresa.md",
+                        "source_path": "empresa.md",
+                        "doc_id": "doc-1",
+                        "entry_type": "chunk",
+                        "start_offset": 28,
+                        "end_offset": 44,
+                    }]],
+                    "distances": [[0.2]],
+                }
+
+        full_doc = "Loja Sao Paulo na abertura.\n\nLoja Recife: Rua do Bom Jesus, 123."
+
+        monkeypatch.setattr(rag, "RAG_ENABLED", True)
+        monkeypatch.setattr(rag, "RAG_RECALL_K", 5)
+        monkeypatch.setattr(rag, "RAG_EXPANDED_CONTEXT_CHARS", 200)
+        monkeypatch.setattr(rag, "_get_chroma", lambda: FakeCollection())
+        monkeypatch.setattr(rag, "_get_embedding", lambda _text: [0.1, 0.2])
+        monkeypatch.setattr(rag, "_resolve_source_path", lambda _source, _docs=None: Path("empresa.md"))
+        monkeypatch.setattr(rag, "_load_document", lambda _path: full_doc)
+
+        results = rag.search_documents_detailed("qual o endereco da loja recife?")
+
+        assert len(results) == 1
+        assert "Rua do Bom Jesus" in results[0].text
+        assert results[0].source == "empresa.md"
+
+    def test_search_documents_wrapper_returns_text_only(self, monkeypatch):
+        import rag
+
+        fake_results = [
+            rag.RAGSearchResult(
+                candidate_id="C1",
+                text="Trecho expandido",
+                source="empresa.md",
+                source_path="empresa.md",
+                doc_id="doc-1",
+                score=1.0,
+                distance=0.1,
+                start_offset=0,
+                end_offset=20,
+            )
+        ]
+
+        monkeypatch.setattr(rag, "search_documents_detailed", lambda _query, top_k=None, docs_path=None: fake_results)
+
+        assert rag.search_documents("pergunta") == ["Trecho expandido"]
 
     def test_format_rag_context_empty(self):
         from rag import format_rag_context
@@ -341,6 +424,37 @@ class TestRAG:
         monkeypatch.setattr(rag, "RAG_ENABLED", True)
         count = rag.ingest_documents(str(tmp_path / "nonexistent"))
         assert count == 0
+
+    def test_embed_model_check_recovers_after_install(self, monkeypatch):
+        import rag
+
+        missing_response = MagicMock()
+        missing_response.raise_for_status.return_value = None
+        missing_response.json.return_value = {"models": []}
+
+        installed_response = MagicMock()
+        installed_response.raise_for_status.return_value = None
+        installed_response.json.return_value = {
+            "models": [{"name": f"{rag.RAG_EMBED_MODEL}:latest"}]
+        }
+
+        monkeypatch.setattr(rag, "_embed_model_checked", False)
+        monkeypatch.setattr(rag, "_embed_model_available", False)
+        monkeypatch.setattr(rag, "_embedding_disabled_reason", None)
+        monkeypatch.setattr(rag, "_embeddings_disabled_until", 0.0)
+
+        with patch("rag.requests.get", return_value=missing_response) as get_tags:
+            assert rag._check_embed_model_available() is False
+            assert get_tags.call_count == 1
+
+        assert rag._embedding_disabled_reason is not None
+
+        monkeypatch.setattr(rag, "_embeddings_disabled_until", 0.0)
+        with patch("rag.requests.get", return_value=installed_response) as get_tags:
+            assert rag._check_embed_model_available() is True
+            assert get_tags.call_count == 1
+
+        assert rag._embedding_disabled_reason is None
 
 
 # ===========================================================================
@@ -440,45 +554,57 @@ class TestAppEndpoints:
 class TestBuildPrompt:
     """Tests for the build_prompt orchestration logic."""
 
-    def _make_prompt(self, content: str, **kwargs) -> list[dict]:
+    def _make_prompt(self, content: str, **kwargs) -> tuple[list[dict], dict]:
         import app as bridge_app
         payload = _make_payload(content=content, **kwargs)
         return bridge_app.build_prompt(payload)
 
     def test_returns_system_and_user(self):
-        messages = self._make_prompt("Oi")
+        messages, _trace = self._make_prompt("Oi")
         roles = [m["role"] for m in messages]
         assert roles == ["system", "user"]
 
     def test_order_intent_with_valid_number(self):
-        messages = self._make_prompt("Qual o status do pedido #1001?")
+        with patch("app.search_documents", return_value=[]):
+            messages, _trace = self._make_prompt("Qual o status do pedido #1001?")
         user_msg = messages[1]["content"]
         assert "Pedido #1001" in user_msg
         assert "Pagamento confirmado" in user_msg
 
     def test_order_intent_with_invalid_number(self):
-        messages = self._make_prompt("Meu pedido é #9999")
+        with patch("app.search_documents", return_value=[]):
+            messages, _trace = self._make_prompt("Meu pedido é #9999")
         user_msg = messages[1]["content"]
         assert "9999" in user_msg
         assert "Nenhum pedido encontrado" in user_msg
 
     def test_order_intent_without_number_asks_for_it(self):
-        messages = self._make_prompt("Quero saber sobre meu pedido")
+        with patch("app.search_documents", return_value=[]):
+            messages, _trace = self._make_prompt("Quero saber sobre meu pedido")
         user_msg = messages[1]["content"]
         assert "número do pedido" in user_msg
 
     def test_product_intent_returns_results(self):
-        messages = self._make_prompt("Vocês têm camiseta?")
+        with patch("app.search_documents", return_value=[]):
+            messages, _trace = self._make_prompt("Vocês têm camiseta?")
         user_msg = messages[1]["content"]
         assert "camiseta" in user_msg.lower()
 
-    def test_general_intent_no_tool_context(self):
-        messages = self._make_prompt("Tudo bem?")
+    def test_general_intent_includes_rag_tool_context(self):
+        with patch("app.search_documents", return_value=["Loja Altero Recife"]):
+            messages, _trace = self._make_prompt("Tem loja em Recife?")
         user_msg = messages[1]["content"]
-        assert "Dados disponíveis" not in user_msg
+        assert "Dados disponíveis" in user_msg
+        assert "Loja Altero Recife" in user_msg
+
+    def test_general_intent_no_match_adds_fallback_instruction(self):
+        with patch("app.search_documents", return_value=[]):
+            messages, _trace = self._make_prompt("Tudo bem?")
+        user_msg = messages[1]["content"]
+        assert "não encontrou no material disponível" in user_msg.lower()
 
     def test_prompt_contains_channel_and_contact(self):
-        messages = self._make_prompt("Oi")
+        messages, _trace = self._make_prompt("Oi")
         user_msg = messages[1]["content"]
         assert "Canal:" in user_msg
         assert "Fulano" in user_msg
@@ -493,7 +619,7 @@ class TestBuildPrompt:
         ]
         with patch("app.chat_history.fetch_history", return_value=fake_history):
             payload = _make_payload(content="e para o interior?")
-            messages = bridge_app.build_prompt(payload)
+            messages, _trace = bridge_app.build_prompt(payload)
 
         user_msg = messages[1]["content"]
         assert "Qual o prazo?" in user_msg
@@ -505,7 +631,7 @@ class TestBuildPrompt:
 
         with patch("app.chat_history.fetch_history", side_effect=Exception("timeout")):
             payload = _make_payload(content="e o prazo?")
-            messages = bridge_app.build_prompt(payload)  # must not raise
+            messages, _trace = bridge_app.build_prompt(payload)  # must not raise
 
         assert len(messages) == 2
 
@@ -515,9 +641,35 @@ class TestBuildPrompt:
 
         with patch("app.search_documents", side_effect=Exception("rag down")):
             payload = _make_payload(content="Qual a política de troca?")
-            messages = bridge_app.build_prompt(payload)  # must not raise
+            messages, _trace = bridge_app.build_prompt(payload)  # must not raise
 
         assert len(messages) == 2
+
+    def test_rag_runs_for_general_order_and_product(self):
+        import app as bridge_app
+
+        with patch("app.search_documents", return_value=[] ) as mock_search:
+            bridge_app.build_prompt(_make_payload(content="Oi"))
+            bridge_app.build_prompt(_make_payload(content="Pedido #1001"))
+            bridge_app.build_prompt(_make_payload(content="Vocês têm camiseta?"))
+
+        assert mock_search.call_count == 3
+
+    def test_order_prompt_combines_shopify_and_rag_context(self):
+        with patch("app.search_documents", return_value=["Loja mais próxima: Recife"]):
+            messages, _trace = self._make_prompt("Qual o status do pedido #1001?")
+
+        user_msg = messages[1]["content"]
+        assert "Pedido #1001" in user_msg
+        assert "Loja mais próxima: Recife" in user_msg
+
+    def test_product_prompt_combines_shopify_and_rag_context(self):
+        with patch("app.search_documents", return_value=["Atendimento presencial disponível"]):
+            messages, _trace = self._make_prompt("Vocês têm camiseta?")
+
+        user_msg = messages[1]["content"]
+        assert "camiseta" in user_msg.lower()
+        assert "Atendimento presencial disponível" in user_msg
 
 
 class TestGenerateReplyFallback:
@@ -530,6 +682,7 @@ class TestGenerateReplyFallback:
         import app as bridge_app
 
         mock_resp = MagicMock()
+        mock_resp.status_code = 200
         mock_resp.json.return_value = {"message": {"content": "Olá!"}}
         mock_resp.raise_for_status = MagicMock()
 
@@ -548,6 +701,7 @@ class TestGenerateReplyFallback:
             if call_count == 1:
                 raise requests.exceptions.Timeout("timeout")
             mock_resp = MagicMock()
+            mock_resp.status_code = 200
             mock_resp.json.return_value = {"message": {"content": "Resposta do fallback"}}
             mock_resp.raise_for_status = MagicMock()
             return mock_resp
@@ -557,11 +711,11 @@ class TestGenerateReplyFallback:
         assert reply == "Resposta do fallback"
         assert call_count == 2
 
-    def test_both_models_fail_raises(self):
+    def test_both_models_fail_returns_fail_soft_message(self):
         import app as bridge_app
 
         with patch("app.requests.post", side_effect=Exception("down")):
-            with pytest.raises(Exception):
-                bridge_app.generate_reply(self._payload())
+            reply = bridge_app.generate_reply(self._payload())
+        assert reply == bridge_app.OLLAMA_UNAVAILABLE_MESSAGE
 
 

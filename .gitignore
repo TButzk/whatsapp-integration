@@ -6,3 +6,4 @@ certs/
 
 # Logs locais
 *.log
+/auto_reply_bridge/docs

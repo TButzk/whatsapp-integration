@@ -23,7 +23,7 @@ Isso evita gastar mais RAM do Docker Desktop e mantém o modelo fora dos contain
 
 ## Como subir o bridge de auto-reply
 
-1. Crie um ambiente virtual Python no Windows.
+1. Use Python 3.11 (compatível com `chromadb==0.6.3`) no Windows.
 2. Instale as dependências do diretório `auto_reply_bridge`.
 3. Copie `auto_reply_bridge/.env.example` para `auto_reply_bridge/.env` e preencha os valores.
 4. Inicie o Ollama no Windows.
@@ -33,9 +33,9 @@ Exemplo no PowerShell:
 
 ```powershell
 cd auto_reply_bridge
-python -m venv .venv
+uv venv --python 3.11 .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+uv pip install -r requirements.txt
 Copy-Item .env.example .env
 python app.py
 ```
@@ -74,11 +74,16 @@ A ingestão pode ser re-executada a qualquer momento — os chunks são armazena
 | Variável | Padrão | Descrição |
 |---|---|---|
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | URL do Ollama |
+| `RAG_OLLAMA_BASE_URL` | `OLLAMA_BASE_URL` | URL do Ollama usada apenas para embeddings (RAG) |
 | `OLLAMA_MODEL` | `gemma3` | Modelo principal |
 | `OLLAMA_FALLBACK_MODEL` | `phi3:medium` | Modelo de fallback automático |
 | `OLLAMA_SYSTEM_PROMPT` | *(ver .env.example)* | Instrução base do atendente |
+| `OLLAMA_TIMEOUT_MAX_SECONDS` | `300` | Limite superior aplicado aos timeouts para evitar valores extremos |
 | `OLLAMA_MAIN_TIMEOUT` | `90` | Timeout do modelo principal (segundos) |
 | `OLLAMA_FALLBACK_TIMEOUT` | `60` | Timeout do fallback (segundos) |
+| `OLLAMA_KEEP_ALIVE` | `5m` | Tempo que o modelo fica carregado após resposta |
+| `OLLAMA_NUM_GPU` | `999` | Número de camadas para offload em GPU (NVIDIA) |
+| `OLLAMA_UNAVAILABLE_MESSAGE` | `No momento estou com instabilidade para responder. Pode tentar novamente em instantes?` | Mensagem enviada quando principal e fallback falham |
 
 ### Histórico de conversa
 
@@ -108,6 +113,8 @@ A ingestão pode ser re-executada a qualquer momento — os chunks são armazena
 | `RAG_TOP_K` | `4` | Chunks recuperados por consulta |
 | `RAG_MAX_CONTEXT_CHARS` | `2500` | Máximo de caracteres de contexto RAG |
 | `RAG_EMBED_MODEL` | `nomic-embed-text` | Modelo de embeddings |
+
+Observação: se chat e embeddings estiverem em instâncias diferentes do Ollama, configure `RAG_OLLAMA_BASE_URL` apontando para a instância que possui o modelo `RAG_EMBED_MODEL`.
 
 ## Configuração no Chatwoot
 

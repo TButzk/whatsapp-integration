@@ -18,18 +18,54 @@ CHAT_HISTORY_ENABLED = os.getenv("CHAT_HISTORY_ENABLED", "true").lower() == "tru
 CHAT_HISTORY_MAX_MESSAGES = int(os.getenv("CHAT_HISTORY_MAX_MESSAGES", "10"))
 CHAT_HISTORY_MAX_CHARS = int(os.getenv("CHAT_HISTORY_MAX_CHARS", "3000"))
 CHAT_HISTORY_INCLUDE_AGENT = os.getenv("CHAT_HISTORY_INCLUDE_AGENT", "true").lower() == "true"
+CHAT_HISTORY_REQUEST_TIMEOUT = int(os.getenv("CHAT_HISTORY_REQUEST_TIMEOUT", "15"))
+
+
+def _normalize_message_type(msg_type: Any) -> Optional[str]:
+    """Normalize Chatwoot message type values to incoming/outgoing labels.
+
+    Chatwoot may return message_type as string ("incoming"/"outgoing")
+    or as integers (0 incoming, 1 outgoing).
+    """
+    if isinstance(msg_type, str):
+        lowered = msg_type.lower().strip()
+        if lowered in {"incoming", "outgoing"}:
+            return lowered
+        if lowered.isdigit():
+            try:
+                msg_type = int(lowered)
+            except ValueError:
+                return None
+        else:
+            return None
+
+    if isinstance(msg_type, int):
+        if msg_type == 0:
+            return "incoming"
+        if msg_type == 1:
+            return "outgoing"
+
+    return None
 
 
 def _role_label(msg: dict[str, Any]) -> Optional[str]:
     """Return a human-readable role label for a Chatwoot message."""
-    msg_type = msg.get("message_type")
-    if msg_type == "incoming":
+    normalized_type = _normalize_message_type(msg.get("message_type"))
+
+    if normalized_type == "incoming":
         return "Cliente"
-    if msg_type == "outgoing":
+
+    if normalized_type == "outgoing":
         sender = msg.get("sender") or {}
-        if sender.get("type") == "agent_bot":
+        sender_type = (
+            sender.get("type")
+            or msg.get("sender_type")
+            or ""
+        )
+        if isinstance(sender_type, str) and sender_type.lower() == "agent_bot":
             return "Bot"
         return "Atendente"
+
     return None
 
 
@@ -78,6 +114,28 @@ def _filter_and_format(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
     return result
 
 
+def _extract_messages(data: Any) -> list[dict[str, Any]]:
+    """Extract Chatwoot messages from known response shapes."""
+    if isinstance(data, list):
+        return [m for m in data if isinstance(m, dict)]
+
+    if not isinstance(data, dict):
+        return []
+
+    candidates: list[Any] = [
+        data.get("payload"),
+        data.get("messages"),
+        (data.get("data") or {}).get("payload") if isinstance(data.get("data"), dict) else None,
+        (data.get("data") or {}).get("messages") if isinstance(data.get("data"), dict) else None,
+    ]
+
+    for candidate in candidates:
+        if isinstance(candidate, list):
+            return [m for m in candidate if isinstance(m, dict)]
+
+    return []
+
+
 def fetch_history(account_id: int, conversation_id: int) -> list[dict[str, str]]:
     """Fetch and filter recent messages from a Chatwoot conversation.
 
@@ -87,17 +145,37 @@ def fetch_history(account_id: int, conversation_id: int) -> list[dict[str, str]]
         return []
 
     try:
+        headers = {"api_access_token": CHATWOOT_API_TOKEN}
+        if CHATWOOT_API_TOKEN:
+            headers["Authorization"] = f"Bearer {CHATWOOT_API_TOKEN}"
+
         response = requests.get(
             (
                 f"{CHATWOOT_BASE_URL}/api/v1/accounts/{account_id}"
                 f"/conversations/{conversation_id}/messages"
             ),
-            headers={"api_access_token": CHATWOOT_API_TOKEN},
-            timeout=10,
+            headers=headers,
+            timeout=CHAT_HISTORY_REQUEST_TIMEOUT,
         )
+        if response.status_code >= 400:
+            body_preview = (response.text or "").strip().replace("\n", " ")[:300]
+            logger.warning(
+                "History HTTP error | status=%s account=%s conversation=%s body=%s",
+                response.status_code,
+                account_id,
+                conversation_id,
+                body_preview,
+            )
         response.raise_for_status()
         data = response.json()
-        messages: list[dict[str, Any]] = data.get("payload") or []
+        messages = _extract_messages(data)
+        if not messages:
+            logger.info(
+                "History empty | account=%s conversation=%s response_keys=%s",
+                account_id,
+                conversation_id,
+                list(data.keys()) if isinstance(data, dict) else type(data).__name__,
+            )
         return _filter_and_format(messages)
     except Exception as exc:
         logger.warning("Failed to fetch conversation history: %s", exc)

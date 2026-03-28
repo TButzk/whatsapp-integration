@@ -5,20 +5,21 @@ import os
 import queue
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import requests
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request
 
+_DOTENV_PATH = Path(__file__).resolve().with_name(".env")
+load_dotenv(dotenv_path=_DOTENV_PATH, override=True)
+
 import chat_history
 import intent as intent_mod
 import shopify_mock
 from intent import Intent
-from rag import format_rag_context, search_documents
-
-
-load_dotenv(override=True)
+from rag import format_rag_context, ingest_documents, search_documents
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -31,22 +32,85 @@ job_queue: "queue.Queue[dict[str, Any]]" = queue.Queue()
 processed_deliveries: dict[str, float] = {}
 processed_lock = threading.Lock()
 
+
+def _read_bounded_int_env(
+    var_name: str, default: int, min_value: int, max_value: int
+) -> int:
+    value = os.getenv(var_name, "").strip()
+    if not value:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r; using default=%s", var_name, value, default)
+        return default
+
+    if parsed < min_value:
+        logger.warning("%s=%s below minimum %s; clamping", var_name, parsed, min_value)
+        return min_value
+    if parsed > max_value:
+        logger.warning("%s=%s above maximum %s; clamping", var_name, parsed, max_value)
+        return max_value
+    return parsed
+
 CHATWOOT_BASE_URL = os.getenv("CHATWOOT_BASE_URL", "http://localhost:65271").rstrip("/")
 CHATWOOT_API_TOKEN = os.getenv("CHATWOOT_API_TOKEN", "")
 CHATWOOT_WEBHOOK_SECRET = os.getenv("CHATWOOT_WEBHOOK_SECRET", "")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:27b-it-q4_K_M")
 OLLAMA_FALLBACK_MODEL = os.getenv("OLLAMA_FALLBACK_MODEL", "phi3:medium")
 OLLAMA_SYSTEM_PROMPT = os.getenv(
     "OLLAMA_SYSTEM_PROMPT",
     "Voce e um atendente virtual objetivo e educado. Responda em portugues do Brasil.",
 )
-OLLAMA_MAIN_TIMEOUT = int(os.getenv("OLLAMA_MAIN_TIMEOUT", "90"))
-OLLAMA_FALLBACK_TIMEOUT = int(os.getenv("OLLAMA_FALLBACK_TIMEOUT", "60"))
+OLLAMA_TIMEOUT_MAX_SECONDS = _read_bounded_int_env(
+    "OLLAMA_TIMEOUT_MAX_SECONDS", default=300, min_value=30, max_value=1800
+)
+OLLAMA_MAIN_TIMEOUT = _read_bounded_int_env(
+    "OLLAMA_MAIN_TIMEOUT", default=90, min_value=5, max_value=OLLAMA_TIMEOUT_MAX_SECONDS
+)
+OLLAMA_FALLBACK_TIMEOUT = _read_bounded_int_env(
+    "OLLAMA_FALLBACK_TIMEOUT", default=60, min_value=5, max_value=OLLAMA_TIMEOUT_MAX_SECONDS
+)
+OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "5m")
+OLLAMA_UNAVAILABLE_MESSAGE = os.getenv(
+    "OLLAMA_UNAVAILABLE_MESSAGE",
+    "No momento estou com instabilidade para responder. Pode tentar novamente em instantes?",
+)
 # Keep backward-compatible alias
-OLLAMA_REQUEST_TIMEOUT = int(os.getenv("OLLAMA_REQUEST_TIMEOUT", str(OLLAMA_MAIN_TIMEOUT)))
+OLLAMA_REQUEST_TIMEOUT = _read_bounded_int_env(
+    "OLLAMA_REQUEST_TIMEOUT",
+    default=OLLAMA_MAIN_TIMEOUT,
+    min_value=5,
+    max_value=OLLAMA_TIMEOUT_MAX_SECONDS,
+)
 MAX_RESPONSE_CHARS = int(os.getenv("MAX_RESPONSE_CHARS", "1200"))
 IGNORE_BOT_PREFIX = os.getenv("IGNORE_BOT_PREFIX", "!botoff")
+
+
+def _read_optional_int_env(var_name: str) -> int | None:
+    value = os.getenv(var_name, "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r; ignoring", var_name, value)
+        return None
+
+
+OLLAMA_NUM_GPU = _read_optional_int_env("OLLAMA_NUM_GPU")
+
+logger.info(
+    "Ollama settings | primary=%s fallback=%s keep_alive=%s main_timeout=%ss fallback_timeout=%ss timeout_cap=%ss num_gpu=%s",
+    OLLAMA_MODEL,
+    OLLAMA_FALLBACK_MODEL,
+    OLLAMA_KEEP_ALIVE,
+    OLLAMA_MAIN_TIMEOUT,
+    OLLAMA_FALLBACK_TIMEOUT,
+    OLLAMA_TIMEOUT_MAX_SECONDS,
+    OLLAMA_NUM_GPU if OLLAMA_NUM_GPU is not None else "default",
+)
 
 
 def verify_signature(raw_body: bytes) -> bool:
@@ -114,14 +178,33 @@ def should_reply(payload: dict[str, Any]) -> tuple[bool, str]:
 
     return True, "ok"
 
-
 def _call_ollama(messages: list[dict[str, str]], model: str, timeout: int) -> str:
     """Call the Ollama chat API and return the response text."""
+    url = f"{OLLAMA_BASE_URL}/api/chat"
+    payload: dict[str, Any] = {
+        "model": model,
+        "stream": False,
+        "messages": messages,
+        "keep_alive": OLLAMA_KEEP_ALIVE,
+    }
+    if OLLAMA_NUM_GPU is not None:
+        # num_gpu controls how many layers should be offloaded to GPU in Ollama.
+        payload["options"] = {"num_gpu": OLLAMA_NUM_GPU}
+
     response = requests.post(
-        f"{OLLAMA_BASE_URL}/api/chat",
-        json={"model": model, "stream": False, "messages": messages},
+        url,
+        json=payload,
         timeout=timeout,
     )
+    if response.status_code >= 400:
+        body_preview = (response.text or "").strip().replace("\n", " ")[:300]
+        logger.warning(
+            "Ollama HTTP error | model=%s status=%s url=%s body=%s",
+            model,
+            response.status_code,
+            url,
+            body_preview,
+        )
     response.raise_for_status()
     data = response.json()
     content = ((data.get("message") or {}).get("content") or "").strip()
@@ -130,14 +213,17 @@ def _call_ollama(messages: list[dict[str, str]], model: str, timeout: int) -> st
     return content[:MAX_RESPONSE_CHARS]
 
 
-def build_prompt(payload: dict[str, Any]) -> list[dict[str, str]]:
+def build_prompt(payload: dict[str, Any]) -> tuple[list[dict[str, str]], dict[str, Any]]:
     """Phase 4 orchestration: build the full prompt for the LLM.
 
     1. Detect intent
     2. Collect conversation history
-    3. Consult Shopify mock (ORDER / PRODUCT intents)
-    4. Consult RAG (INSTITUTIONAL intent)
+    3. Consult RAG documents (all intents)
+    4. Consult Shopify mock (ORDER / PRODUCT intents)
     5. Compose final messages list
+
+    Returns (messages, trace) where *trace* carries all intermediate data
+    for a single consolidated debug log in :func:`generate_reply`.
     """
     content = (payload.get("content") or "").strip()
     contact = payload.get("contact") or {}
@@ -166,36 +252,41 @@ def build_prompt(payload: dict[str, Any]) -> list[dict[str, str]]:
     history_context = chat_history.format_history_context(history)
 
     # ---- 3. Tool context (Shopify / RAG) --------------------------------
+    shopify_context = ""
+    rag_context = ""
     tool_context = ""
     rag_chunks_count = 0
+    raw_rag_chunks: list[Any] = []
+
+    try:
+        raw_rag_chunks = search_documents(content)
+        rag_chunks_count = len(raw_rag_chunks)
+        rag_context = format_rag_context(raw_rag_chunks)
+    except Exception as exc:
+        logger.warning("RAG search failed: %s", exc)
 
     if detected_intent == Intent.ORDER:
         order_number = intent_mod.extract_order_number(content)
         if order_number:
             order = shopify_mock.get_order_status(order_number)
             if order:
-                tool_context = shopify_mock.format_order_response(order)
+                shopify_context = shopify_mock.format_order_response(order)
             else:
-                tool_context = (
+                shopify_context = (
                     f"Nenhum pedido encontrado com o número #{order_number}. "
                     "Verifique se o número está correto."
                 )
         else:
-            tool_context = (
+            shopify_context = (
                 "Para consultar um pedido, por favor informe o número do pedido."
             )
 
     elif detected_intent == Intent.PRODUCT:
         products = shopify_mock.search_products(content, limit=3)
-        tool_context = shopify_mock.format_products_response(products, content)
+        shopify_context = shopify_mock.format_products_response(products, content)
 
-    elif detected_intent == Intent.INSTITUTIONAL:
-        try:
-            chunks = search_documents(content)
-            rag_chunks_count = len(chunks)
-            tool_context = format_rag_context(chunks)
-        except Exception as exc:
-            logger.warning("RAG search failed: %s", exc)
+    context_parts = [part for part in (shopify_context, rag_context) if part]
+    tool_context = "\n\n---\n\n".join(context_parts)
 
     # ---- 4. Build user message ------------------------------------------
     sections: list[str] = [
@@ -210,6 +301,11 @@ def build_prompt(payload: dict[str, Any]) -> list[dict[str, str]]:
         sections.append(f"Dados disponíveis para esta resposta:\n{tool_context}")
 
     sections.append(f"Mensagem atual do cliente: {content}")
+    if not tool_context:
+        sections.append(
+            "Nenhuma informação relevante foi encontrada nos documentos para esta mensagem. "
+            "Avise que não encontrou no material disponível e peça mais detalhes objetivos."
+        )
     sections.append(
         "Responda de forma objetiva e útil. "
         "Se faltar contexto, faça uma pergunta curta. "
@@ -229,22 +325,88 @@ def build_prompt(payload: dict[str, Any]) -> list[dict[str, str]]:
         time.time() - t0,
     )
 
-    return [
+    messages = [
         {"role": "system", "content": OLLAMA_SYSTEM_PROMPT},
         {"role": "user", "content": user_message},
     ]
 
+    trace: dict[str, Any] = {
+        "user_input": content,
+        "intent": str(detected_intent),
+        "history_context": history_context,
+        "rag_chunks": [
+            getattr(chunk, "page_content", None) or (chunk if isinstance(chunk, str) else str(chunk))
+            for chunk in raw_rag_chunks
+        ],
+        "tool_context": tool_context,
+        "system_prompt": OLLAMA_SYSTEM_PROMPT,
+        "user_message": user_message,
+    }
+
+    return messages, trace
+
+
+def _log_full_trace(trace: dict[str, Any], model_used: str, reply: str, elapsed: float) -> None:
+    """Emit a single log entry with the complete request/response lifecycle."""
+    sep = "─" * 72
+    lines = [
+        "",
+        sep,
+        "TRACE — FULL PIPELINE",
+        sep,
+        f"[INTENT]        {trace['intent']}",
+        "",
+        "[ENTRADA — mensagem do usuário]",
+        trace["user_input"],
+    ]
+
+    if trace["history_context"]:
+        lines += ["", "[HISTÓRICO DA CONVERSA]", trace["history_context"]]
+
+    if trace["rag_chunks"]:
+        lines += ["", f"[EMBEDDINGS — {len(trace['rag_chunks'])} chunk(s) recuperado(s)]"]
+        for i, chunk in enumerate(trace["rag_chunks"], 1):
+            lines.append(f"  [{i}] {chunk}")
+    else:
+        lines += ["", "[EMBEDDINGS]    (nenhum chunk recuperado)"]
+
+    if trace["tool_context"]:
+        lines += ["", "[CONTEXTO DE FERRAMENTA (Shopify / RAG formatado)]", trace["tool_context"]]
+
+    lines += [
+        "",
+        "[PROMPT — system]",
+        trace["system_prompt"],
+        "",
+        "[PROMPT — user message enviada ao modelo]",
+        trace["user_message"],
+        "",
+        f"[RESPOSTA — model={model_used}  elapsed={elapsed:.2f}s]",
+        reply,
+        sep,
+    ]
+
+    logger.info("\n".join(lines))
+
 
 def generate_reply(payload: dict[str, Any]) -> str:
-    """Generate a reply, falling back to OLLAMA_FALLBACK_MODEL on error."""
-    messages = build_prompt(payload)
+    """Generate a reply with model fallback and fail-soft final response."""
+    messages, trace = build_prompt(payload)
     t0 = time.time()
+    logger.info(
+        "Calling Ollama | base_url=%s primary=%s fallback=%s",
+        OLLAMA_BASE_URL,
+        OLLAMA_MODEL,
+        OLLAMA_FALLBACK_MODEL,
+    )
 
     try:
         reply = _call_ollama(messages, OLLAMA_MODEL, OLLAMA_MAIN_TIMEOUT)
+        elapsed = time.time() - t0
         logger.info(
-            "Reply generated | model=%s total_time=%.2fs", OLLAMA_MODEL, time.time() - t0
+            "Reply generated | model=%s total_time=%.2fs", OLLAMA_MODEL, elapsed
         )
+        _log_full_trace(trace, OLLAMA_MODEL, reply, elapsed)
         return reply
     except Exception as primary_exc:
         logger.warning(
@@ -254,13 +416,30 @@ def generate_reply(payload: dict[str, Any]) -> str:
             OLLAMA_FALLBACK_MODEL,
         )
 
-    reply = _call_ollama(messages, OLLAMA_FALLBACK_MODEL, OLLAMA_FALLBACK_TIMEOUT)
-    logger.info(
-        "Reply generated | model=%s (fallback) total_time=%.2fs",
-        OLLAMA_FALLBACK_MODEL,
-        time.time() - t0,
-    )
-    return reply
+    try:
+        reply = _call_ollama(messages, OLLAMA_FALLBACK_MODEL, OLLAMA_FALLBACK_TIMEOUT)
+        elapsed = time.time() - t0
+        logger.info(
+            "Reply generated | model=%s (fallback) total_time=%.2fs",
+            OLLAMA_FALLBACK_MODEL,
+            elapsed,
+        )
+        _log_full_trace(trace, OLLAMA_FALLBACK_MODEL, reply, elapsed)
+        return reply
+    except requests.exceptions.RequestException as fallback_exc:
+        logger.warning(
+            "Fallback model %s failed (%s: %s); sending fail-soft message",
+            OLLAMA_FALLBACK_MODEL,
+            type(fallback_exc).__name__,
+            fallback_exc,
+        )
+        return OLLAMA_UNAVAILABLE_MESSAGE[:MAX_RESPONSE_CHARS]
+    except Exception:
+        logger.exception(
+            "Fallback model %s failed unexpectedly; sending fail-soft message",
+            OLLAMA_FALLBACK_MODEL,
+        )
+        return OLLAMA_UNAVAILABLE_MESSAGE[:MAX_RESPONSE_CHARS]
 
 
 def send_chatwoot_message(payload: dict[str, Any], reply_text: str) -> None:
@@ -314,6 +493,48 @@ def healthz() -> Response:
     return Response("ok\n", mimetype="text/plain")
 
 
+@app.post("/chat")
+def chat() -> tuple[Response, int] | Response:
+    """Direct chat endpoint for testing the RAG + LLM pipeline without Chatwoot.
+
+    Minimal required body:
+        { "content": "sua pergunta aqui" }
+
+    Optional fields (same shape as the Chatwoot webhook payload):
+        contact.name, conversation.channel, conversation.id, account.id
+    """
+    body = request.get_json(silent=True) or {}
+    content = (body.get("content") or "").strip()
+    if not content:
+        return jsonify({"error": "missing or empty 'content' field"}), 400
+
+    # Build a payload compatible with build_prompt / generate_reply
+    payload: dict[str, Any] = {
+        "event": "message_created",
+        "message_type": "incoming",
+        "private": False,
+        "content": content,
+        "contact": body.get("contact") or {},
+        "conversation": body.get("conversation") or {},
+        "account": body.get("account") or {},
+        "sender": body.get("sender") or {"type": "contact"},
+    }
+
+    t0 = time.time()
+    try:
+        reply = generate_reply(payload)
+    except Exception:
+        logger.exception("/chat endpoint: error generating reply")
+        return jsonify({"error": "internal error generating reply"}), 500
+
+    return jsonify(
+        {
+            "reply": reply,
+            "elapsed_seconds": round(time.time() - t0, 2),
+        }
+    )
+
+
 @app.post("/webhook")
 def webhook() -> tuple[Response, int] | Response:
     raw_body = request.get_data()
@@ -332,6 +553,9 @@ def webhook() -> tuple[Response, int] | Response:
     job_queue.put(payload)
     return jsonify({"status": "accepted"}), 202
 
+
+# Auto-ingest RAG documents on startup (runs in background, non-blocking)
+threading.Thread(target=ingest_documents, daemon=True, name="rag-ingest").start()
 
 if __name__ == "__main__":
     threading.Thread(target=worker, daemon=True).start()

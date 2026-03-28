@@ -1,0 +1,244 @@
+{
+  "info": {
+    "_postman_id": "8f6fcd66-4f13-4f47-8a4f-1174f6408ce4",
+    "name": "Chatwoot API Local",
+    "description": "Collection para validar API do Chatwoot local e inspecionar respostas.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Healthcheck Profile",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "api_access_token",
+            "value": "{{api_token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/profile",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "profile"
+          ]
+        },
+        "description": "Valida token e conectividade com a API."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status is 200', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "",
+              "let body = {};",
+              "try { body = pm.response.json(); } catch (e) {}",
+              "console.log('Profile response:', body);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "List Conversations",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "api_access_token",
+            "value": "{{api_token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/accounts/{{account_id}}/conversations?status=all",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "accounts",
+            "{{account_id}}",
+            "conversations"
+          ],
+          "query": [
+            {
+              "key": "status",
+              "value": "all"
+            }
+          ]
+        },
+        "description": "Lista conversas da conta. No Chatwoot atual, itens costumam vir em data.payload."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status is 200', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "",
+              "let body = {};",
+              "try { body = pm.response.json(); } catch (e) {}",
+              "const payload = (body.data && body.data.payload) ? body.data.payload : [];",
+              "console.log('Conversations total:', payload.length);",
+              "if (payload.length > 0) {",
+              "  const firstId = payload[0].id;",
+              "  console.log('First conversation_id:', firstId);",
+              "  pm.environment.set('conversation_id', String(firstId));",
+              "}",
+              "pm.test('Response has data', function () {",
+              "  pm.expect(body).to.be.an('object');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "List Messages By Conversation",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "api_access_token",
+            "value": "{{api_token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/accounts/{{account_id}}/conversations/{{conversation_id}}/messages",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "accounts",
+            "{{account_id}}",
+            "conversations",
+            "{{conversation_id}}",
+            "messages"
+          ]
+        },
+        "description": "Busca mensagens de uma conversa. Neste endpoint os itens costumam vir em payload."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status is 200', function () {",
+              "  pm.response.to.have.status(200);",
+              "});",
+              "",
+              "let body = {};",
+              "try { body = pm.response.json(); } catch (e) {}",
+              "const payload = Array.isArray(body.payload) ? body.payload : [];",
+              "console.log('Messages total:', payload.length);",
+              "console.log('First 3 messages:', payload.slice(0, 3));",
+              "pm.test('Messages payload is array', function () {",
+              "  pm.expect(payload).to.be.an('array');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Send Outgoing Message",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "api_access_token",
+            "value": "{{api_token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"content\": \"Teste enviado via Postman\",\n  \"message_type\": \"outgoing\",\n  \"private\": false,\n  \"content_type\": \"text\",\n  \"content_attributes\": {}\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/accounts/{{account_id}}/conversations/{{conversation_id}}/messages",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "accounts",
+            "{{account_id}}",
+            "conversations",
+            "{{conversation_id}}",
+            "messages"
+          ]
+        },
+        "description": "Envia mensagem de saída para a conversa."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status is success', function () {",
+              "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+              "});",
+              "",
+              "let body = {};",
+              "try { body = pm.response.json(); } catch (e) {}",
+              "console.log('Send message response:', body);"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:65271"
+    },
+    {
+      "key": "api_token",
+      "value": ""
+    },
+    {
+      "key": "account_id",
+      "value": "1"
+    },
+    {
+      "key": "conversation_id",
+      "value": "10"
+    }
+  ]
+}
