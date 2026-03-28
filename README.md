@@ -98,10 +98,13 @@ A ingestão pode ser re-executada a qualquer momento — os chunks são armazena
 
 | Variável | Padrão | Descrição |
 |---|---|---|
-| `SHOPIFY_MODE` | `mock` | `mock` = dados locais; `real` = API Shopify |
+| `SHOPIFY_MODE` | `mock` | `mock` = dados locais; `mcp` = Storefront MCP Server |
 | `SHOPIFY_STORE_NAME` | `Nome da Loja` | Nome exibido nas respostas |
 | `SHOPIFY_CURRENCY` | `BRL` | Moeda |
-| `SHOPIFY_MOCK_DELAY_MS` | `0` | Atraso simulado em ms |
+| `SHOPIFY_MOCK_DELAY_MS` | `0` | Atraso simulado em ms (modo mock) |
+| `SHOPIFY_MCP_ENDPOINT` | `https://mcp.shopify.com/storefront/v1` | URL do servidor MCP |
+| `SHOPIFY_STOREFRONT_TOKEN` | _(vazio)_ | Token público do Storefront API (modo mcp) |
+| `SHOPIFY_MCP_TIMEOUT` | `30` | Timeout em segundos para chamadas MCP |
 
 ### RAG de documentos
 
@@ -167,12 +170,49 @@ python -m pytest tests/ -v
 | `e o prazo?` (após pergunta anterior) | GENERAL + histórico | Resposta contextualizando o histórico |
 | `Oi, tudo bem?` | GENERAL | Resposta genérica do atendente |
 
-## Próximos passos para integrar a API Shopify real
+## Integração com o Shopify Storefront MCP Server
+
+O bridge suporta dois modos de integração com a Shopify, selecionáveis pela variável `SHOPIFY_MODE`.
+
+### Modo mock (padrão)
+
+```env
+SHOPIFY_MODE=mock
+```
+
+Utiliza dados locais de teste sem nenhuma dependência externa. Ideal para desenvolvimento e
+testes.  Os pedidos #1001, #1002 e #1003 e os produtos de exemplo ficam disponíveis imediatamente.
+
+### Modo mcp — Shopify Storefront MCP Server
+
+```env
+SHOPIFY_MODE=mcp
+SHOPIFY_MCP_ENDPOINT=https://mcp.shopify.com/storefront/v1
+SHOPIFY_STOREFRONT_TOKEN=<seu_token_publico_storefront>
+```
+
+Conecta ao [Shopify Storefront MCP Server](https://shopify.dev/docs/apps/build/storefront-mcp/servers/storefront)
+em tempo real usando o protocolo MCP (JSON-RPC 2.0 sobre HTTP).  O modelo local (Ollama) continua
+sendo o LLM; o MCP Server é usado apenas para consultar produtos do catálogo.
+
+**Passos para ativar:**
+
+1. No painel da Shopify, crie um **Storefront API access token** (token público — sem permissões de
+   escrita necessárias).
+2. Copie o token e cole em `SHOPIFY_STOREFRONT_TOKEN` no seu `.env`.
+3. Altere `SHOPIFY_MODE=mcp`.
+4. Reinicie o bridge: `python app.py`.
+
+**Limitação conhecida:** o Storefront API não expõe dados privados de pedidos de clientes.
+Consultas de pedido (`#NNNN`) mostrarão "Nenhum pedido encontrado" no modo MCP.  Para suporte
+completo a pedidos em produção, implemente `shopify_real.py` usando a Admin API (veja seção abaixo).
+
+### Modo real — Admin API (futuro)
 
 1. Crie um app privado na Shopify com permissão `read_orders` e `read_products`.
 2. Adicione `SHOPIFY_ACCESS_TOKEN` e `SHOPIFY_STORE_URL` ao `.env`.
-3. Crie `shopify_real.py` com as mesmas assinaturas de `shopify_mock.py` (`get_order_status`, `search_products`).
-4. Em `app.py`, importe o módulo real quando `SHOPIFY_MODE != "mock"`.
+3. Crie `shopify_real.py` com as mesmas assinaturas de `shopify_mock.py` (`get_order_status`, `search_products`, `format_order_response`, `format_products_response`).
+4. Em `app.py`, adicione `elif _SHOPIFY_MODE == "real": import shopify_real as _shopify`.
 5. Adicione tratamento de rate limit (429) com retry e backoff.
 6. Nunca versione o `SHOPIFY_ACCESS_TOKEN` — use variáveis de ambiente ou um secrets manager.
 
@@ -183,6 +223,7 @@ auto_reply_bridge/
 ├── app.py              # Orquestração principal (Flask + worker)
 ├── chat_history.py     # Fase 1: histórico de conversa
 ├── shopify_mock.py     # Fase 2: Shopify em modo mock
+├── shopify_mcp.py      # Fase 2: Shopify via Storefront MCP Server
 ├── intent.py           # Fase 2: detecção de intenção
 ├── rag.py              # Fase 3: ingestão e busca RAG
 ├── docs/               # Documentos da empresa (txt, md, html, pdf)
