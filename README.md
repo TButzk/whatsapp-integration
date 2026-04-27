@@ -1,6 +1,25 @@
 # whatsapp-integration
 Integração com WhatsApp para centralização de atendimentos no Chatwoot, com respostas automáticas via Ollama rodando no host Windows.
 
+## Setup e start rapido (Windows)
+
+No PowerShell, dentro da pasta `whatsapp-integration`:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\setup-and-start.ps1
+```
+
+Opcoes uteis:
+
+```powershell
+# Pula etapa de pull das imagens
+.\setup-and-start.ps1 -SkipPull
+
+# Inicia tambem o auto_reply_bridge em nova janela
+.\setup-and-start.ps1 -StartBridge
+```
+
 ## Resposta automática com Gemma3
 
 Esta stack foi preparada para o seguinte desenho:
@@ -83,6 +102,7 @@ A ingestão pode ser re-executada a qualquer momento — os chunks são armazena
 | `OLLAMA_FALLBACK_TIMEOUT` | `60` | Timeout do fallback (segundos) |
 | `OLLAMA_KEEP_ALIVE` | `5m` | Tempo que o modelo fica carregado após resposta |
 | `OLLAMA_NUM_GPU` | `999` | Número de camadas para offload em GPU (NVIDIA) |
+| `OLLAMA_NUM_CTX` | *(default do Ollama/modelo)* | Janela de contexto (tokens) enviada via `options.num_ctx` |
 | `OLLAMA_UNAVAILABLE_MESSAGE` | `No momento estou com instabilidade para responder. Pode tentar novamente em instantes?` | Mensagem enviada quando principal e fallback falham |
 
 ### Histórico de conversa
@@ -116,6 +136,9 @@ A ingestão pode ser re-executada a qualquer momento — os chunks são armazena
 | `RAG_TOP_K` | `4` | Chunks recuperados por consulta |
 | `RAG_MAX_CONTEXT_CHARS` | `2500` | Máximo de caracteres de contexto RAG |
 | `RAG_EMBED_MODEL` | `nomic-embed-text` | Modelo de embeddings |
+| `RAG_OLLAMA_REQUEST_TIMEOUT` | `OLLAMA_MAIN_TIMEOUT` | Timeout para chamadas de embedding no Ollama |
+| `RAG_OLLAMA_KEEP_ALIVE` | `OLLAMA_KEEP_ALIVE` | Mantém o modelo de embedding aquecido entre chamadas |
+| `RAG_OLLAMA_NUM_GPU` | `OLLAMA_NUM_GPU` | Offload de camadas em GPU para embeddings/rerank |
 
 Observação: se chat e embeddings estiverem em instâncias diferentes do Ollama, configure `RAG_OLLAMA_BASE_URL` apontando para a instância que possui o modelo `RAG_EMBED_MODEL`.
 

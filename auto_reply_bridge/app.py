@@ -3,6 +3,7 @@ import hmac
 import logging
 import os
 import queue
+import re
 import threading
 import time
 from pathlib import Path
@@ -18,15 +19,21 @@ load_dotenv(dotenv_path=_DOTENV_PATH, override=True)
 import chat_history
 import importlib
 import intent as intent_mod
-from intent import Intent
-from rag import format_rag_context, ingest_documents, search_documents
+from intent import Intent, IntentResult
+from rag import (
+    RAGSearchResult,
+    format_rag_context,
+    format_rag_evidence_context,
+    ingest_documents,
+    search_documents,
+    search_documents_detailed,
+)
 
 # ---------------------------------------------------------------------------
 # Shopify module — selected at startup based on SHOPIFY_MODE env variable.
 # Supported values:
 #   mock  (default) — local mock data, no network calls
-#   mcp             — Shopify Storefront MCP Server (requires SHOPIFY_MCP_ENDPOINT
-#                     and SHOPIFY_STOREFRONT_TOKEN)
+#   mcp             — Shopify Storefront MCP Server (requires SHOPIFY_MCP_ENDPOINT)
 # ---------------------------------------------------------------------------
 _SHOPIFY_MODE = os.getenv("SHOPIFY_MODE", "mock").lower()
 if _SHOPIFY_MODE not in ("mock", "mcp"):
@@ -43,6 +50,22 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 logger = logging.getLogger("auto-reply-bridge")
+
+# ---------------------------------------------------------------------------
+# Inference file logger — one file per run, one block per request.
+# Configured via INFERENCE_LOG_PATH (default: auto_reply_bridge/logs/inferences.log)
+# ---------------------------------------------------------------------------
+_INFERENCE_LOG_PATH = Path(
+    os.getenv("INFERENCE_LOG_PATH", str(Path(__file__).resolve().parent / "logs" / "inferences.log"))
+)
+_INFERENCE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+_inference_logger = logging.getLogger("auto-reply-bridge.inference")
+_inference_logger.setLevel(logging.DEBUG)
+_inference_logger.propagate = False  # Don't duplicate to root handler
+_inference_fh = logging.FileHandler(_INFERENCE_LOG_PATH, encoding="utf-8")
+_inference_fh.setFormatter(logging.Formatter("%(message)s"))
+_inference_logger.addHandler(_inference_fh)
+logger.info("Inference log: %s", _INFERENCE_LOG_PATH)
 
 app = Flask(__name__)
 job_queue: "queue.Queue[dict[str, Any]]" = queue.Queue()
@@ -104,6 +127,13 @@ OLLAMA_REQUEST_TIMEOUT = _read_bounded_int_env(
 MAX_RESPONSE_CHARS = int(os.getenv("MAX_RESPONSE_CHARS", "1200"))
 IGNORE_BOT_PREFIX = os.getenv("IGNORE_BOT_PREFIX", "!botoff")
 
+# ---------------------------------------------------------------------------
+# Melhoria 5 — controle de verbosidade do trace de inferência.
+# Quando False (padrão), emite apenas resumo (intent, scores, tempos).
+# Quando True, emite trace completo, porém sempre sanitizado.
+# ---------------------------------------------------------------------------
+DEBUG_INFERENCE_TRACE = os.getenv("DEBUG_INFERENCE_TRACE", "false").lower() == "true"
+
 
 def _read_optional_int_env(var_name: str) -> int | None:
     value = os.getenv(var_name, "").strip()
@@ -117,9 +147,13 @@ def _read_optional_int_env(var_name: str) -> int | None:
 
 
 OLLAMA_NUM_GPU = _read_optional_int_env("OLLAMA_NUM_GPU")
+OLLAMA_NUM_CTX = _read_optional_int_env("OLLAMA_NUM_CTX")
+if OLLAMA_NUM_CTX is not None and OLLAMA_NUM_CTX < 256:
+    logger.warning("OLLAMA_NUM_CTX=%s is too low; ignoring", OLLAMA_NUM_CTX)
+    OLLAMA_NUM_CTX = None
 
 logger.info(
-    "Ollama settings | primary=%s fallback=%s keep_alive=%s main_timeout=%ss fallback_timeout=%ss timeout_cap=%ss num_gpu=%s",
+    "Ollama settings | primary=%s fallback=%s keep_alive=%s main_timeout=%ss fallback_timeout=%ss timeout_cap=%ss num_gpu=%s num_ctx=%s",
     OLLAMA_MODEL,
     OLLAMA_FALLBACK_MODEL,
     OLLAMA_KEEP_ALIVE,
@@ -127,7 +161,307 @@ logger.info(
     OLLAMA_FALLBACK_TIMEOUT,
     OLLAMA_TIMEOUT_MAX_SECONDS,
     OLLAMA_NUM_GPU if OLLAMA_NUM_GPU is not None else "default",
+    OLLAMA_NUM_CTX if OLLAMA_NUM_CTX is not None else "default",
 )
+
+# ---------------------------------------------------------------------------
+# Query Planner — LLM-powered query analysis before retrieval
+# ---------------------------------------------------------------------------
+QUERY_PLANNER_ENABLED = os.getenv("QUERY_PLANNER_ENABLED", "true").lower() == "true"
+QUERY_PLANNER_MODEL = os.getenv("QUERY_PLANNER_MODEL", "").strip() or OLLAMA_MODEL
+QUERY_PLANNER_TIMEOUT = _read_bounded_int_env(
+    "QUERY_PLANNER_TIMEOUT", default=30, min_value=5, max_value=OLLAMA_TIMEOUT_MAX_SECONDS
+)
+
+_PLANNER_SYSTEM_PROMPT = (
+    "Voce e um assistente de planejamento de busca. "
+    "Dada a mensagem do cliente e o contexto da conversa, extraia as melhores queries de busca.\n\n"
+    "Responda EXATAMENTE neste formato (uma chave por linha, sem explicacoes extras):\n"
+    "intent: <order|product|institutional|general>\n"
+    "rag_query: <melhor frase para busca semantica nos documentos da empresa, ou NONE>\n"
+    "product_query: <termo limpo para buscar produto no catalogo, ou NONE>\n"
+    "policy_query: <pergunta sobre politicas/trocas/devolucoes da loja, ou NONE>\n\n"
+    "Regras:\n"
+    "- rag_query: use palavras-chave relevantes em portugues, sem artigos desnecessarios\n"
+    "- product_query: apenas o nome/tipo do produto, sem frases completas. Ex: 'snowboard', 'tenis branco'\n"
+    "- policy_query: a pergunta sobre politica da loja, se aplicavel\n"
+    "- Se o campo nao se aplica, escreva NONE\n"
+    "- intent: corrija a intencao se o regex errou"
+)
+
+logger.info(
+    "Query planner | enabled=%s model=%s timeout=%ss",
+    QUERY_PLANNER_ENABLED,
+    QUERY_PLANNER_MODEL,
+    QUERY_PLANNER_TIMEOUT,
+)
+
+
+def _parse_planner_response(raw: str) -> dict[str, str]:
+    """Parse key: value lines from planner LLM output."""
+    result: dict[str, str] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip().lower().replace(" ", "_")
+        value = value.strip()
+        if key in ("intent", "rag_query", "product_query", "policy_query"):
+            result[key] = "" if value.upper() == "NONE" else value
+    return result
+
+
+def _call_query_planner(
+    content: str, regex_intent: str, history_context: str
+) -> dict[str, str]:
+    """Call the LLM to plan optimised search queries.
+
+    Returns a dict with keys: intent, rag_query, product_query, policy_query.
+    On any failure returns an empty dict (caller falls back to current behavior).
+    """
+    if not QUERY_PLANNER_ENABLED:
+        return {}
+
+    user_parts = []
+    if history_context:
+        user_parts.append(f"Historico recente:\n{history_context}")
+    user_parts.append(f"Intencao detectada por regex: {regex_intent}")
+    user_parts.append(f"Mensagem do cliente: {content}")
+
+    messages = [
+        {"role": "system", "content": _PLANNER_SYSTEM_PROMPT},
+        {"role": "user", "content": "\n\n".join(user_parts)},
+    ]
+
+    try:
+        payload: dict[str, Any] = {
+            "model": QUERY_PLANNER_MODEL,
+            "stream": False,
+            "messages": messages,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
+        }
+        options: dict[str, Any] = {}
+        if OLLAMA_NUM_GPU is not None:
+            options["num_gpu"] = OLLAMA_NUM_GPU
+        if OLLAMA_NUM_CTX is not None:
+            options["num_ctx"] = OLLAMA_NUM_CTX
+        if options:
+            payload["options"] = options
+
+        response = requests.post(
+            f"{OLLAMA_BASE_URL}/api/chat",
+            json=payload,
+            timeout=QUERY_PLANNER_TIMEOUT,
+        )
+        response.raise_for_status()
+        data = response.json()
+        raw_reply = ((data.get("message") or {}).get("content") or "").strip()
+        if not raw_reply:
+            logger.warning("Query planner returned empty response")
+            return {}
+
+        parsed = _parse_planner_response(raw_reply)
+        logger.info(
+            "Query planner result | raw=%r parsed=%s",
+            raw_reply[:200],
+            parsed,
+        )
+        return parsed
+    except Exception as exc:
+        logger.warning("Query planner failed (falling back to raw query): %s", exc)
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# Melhoria 5 — sanitização de dados sensíveis nos logs.
+# Remove CPF, telefone, e-mail e números de pedido antes de gravar.
+# ---------------------------------------------------------------------------
+
+_SANITIZE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # CPF: 123.456.789-00 ou 12345678900
+    (re.compile(r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b"), "***CPF***"),
+    # Telefone: +55 11 91234-5678, (11) 91234-5678, 11912345678 etc.
+    (re.compile(r"(?:\+?\d{1,3}[\s-]?)?\(?\d{2}\)?[\s-]?\d{4,5}[\s-]?\d{4}\b"), "***FONE***"),
+    # E-mail
+    (re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"), "***EMAIL***"),
+    # Número de pedido com # (ex.: #12345)
+    (re.compile(r"#\d{4,}"), "#***"),
+]
+
+# Limite de caracteres por chunk nos logs (Melhoria 5)
+_LOG_CHUNK_MAX_CHARS = 500
+
+
+def _sanitize_for_log(text: str) -> str:
+    """Remove dados sensíveis (CPF, telefone, e-mail, pedido) de um texto para log."""
+    if not text:
+        return text
+    for pattern, replacement in _SANITIZE_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def _truncate_for_log(text: str, max_chars: int = _LOG_CHUNK_MAX_CHARS) -> str:
+    """Trunca texto longo para logs, adicionando indicador de corte."""
+    if not text or len(text) <= max_chars:
+        return text
+    return text[:max_chars] + f"... [{len(text) - max_chars} chars truncados]"
+
+
+# ---------------------------------------------------------------------------
+# Melhoria 3 — heurística para decidir quando usar o query planner LLM.
+# Evita custo desnecessário em casos simples onde regex + busca direta
+# são suficientes.
+# ---------------------------------------------------------------------------
+
+
+def should_use_query_planner(
+    content: str,
+    intent_result: IntentResult,
+    history_context: str,
+) -> tuple[bool, str]:
+    """Decide se o query planner LLM deve ser chamado.
+
+    Retorna (usar_planner: bool, motivo: str) para rastreabilidade.
+
+    Regras (em ordem de prioridade):
+    1. Se QUERY_PLANNER_ENABLED=false → nunca usar
+    2. ORDER + número de pedido explícito → skip (busca direta é melhor)
+    3. PRODUCT + mensagem curta → skip (regex já extraiu bem)
+    4. INSTITUTIONAL → skip (fallback determinístico de políticas é melhor)
+    5. GENERAL → usar (precisa de ajuda para rotear)
+    6. Mensagem longa (>100 chars) → usar (pode ser ambígua)
+    7. Default → skip
+    """
+    if not QUERY_PLANNER_ENABLED:
+        return False, "planner_disabled"
+
+    intent = intent_result.intent
+    msg_len = len(content.strip())
+
+    # ORDER com número de pedido: busca direta no Shopify, planner desnecessário
+    if intent == Intent.ORDER and intent_result.has_order_id:
+        return False, "order_with_id"
+
+    # PRODUCT com mensagem curta: regex extrai bem o termo de busca
+    if intent == Intent.PRODUCT and msg_len < 50:
+        return False, "simple_product"
+
+    # INSTITUTIONAL: o fallback determinístico de políticas (Melhoria 4)
+    # já cobre esse caso sem precisar de LLM
+    if intent == Intent.INSTITUTIONAL:
+        return False, "institutional_direct"
+
+    # GENERAL: sem sinal claro de intenção — planner ajuda a rotear
+    if intent == Intent.GENERAL:
+        return True, "general_needs_planner"
+
+    # Mensagem longa pode ser ambígua mesmo com intenção detectada
+    if msg_len > 100:
+        return True, "long_message"
+
+    # Default: skip para economizar latência
+    return False, "default_skip"
+
+
+# ---------------------------------------------------------------------------
+# Melhoria 4 — fallback determinístico para busca de políticas.
+# Dispara busca RAG focada em políticas quando há forte indício
+# (palavras-chave), independente do planner.
+# ---------------------------------------------------------------------------
+
+
+def _build_policy_search_query(content: str, intent_result: IntentResult) -> str:
+    """Retorna query de busca para políticas, ou string vazia se não aplicável.
+
+    Dispara quando:
+    - intent_result.has_policy_terms é True, OU
+    - intenção é INSTITUTIONAL
+    """
+    if intent_result.has_policy_terms or intent_result.intent == Intent.INSTITUTIONAL:
+        # Usar a mensagem original como query — mais natural para busca semântica
+        return content.strip()
+    return ""
+
+
+_CART_KEYWORDS = (
+    "carrinho",
+    "cart",
+    "checkout",
+    "finalizar compra",
+    "adicionar no carrinho",
+    "remover do carrinho",
+)
+
+
+def _is_cart_message(content: str) -> bool:
+    text = content.lower()
+    return any(keyword in text for keyword in _CART_KEYWORDS)
+
+
+def _extract_cart_id(content: str, payload: dict[str, Any]) -> str:
+    text = content.strip()
+    patterns = [
+        r"\bgid://shopify/Cart/[A-Za-z0-9_\-=%]+",
+        r"\bcart[_-]?id\s*[:=]\s*([A-Za-z0-9_\-=%]+)",
+        r"\bcarrinho\s*[:#]?\s*([A-Za-z0-9_\-=%]{8,})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        if match.group(0).startswith("gid://shopify/Cart/"):
+            return match.group(0)
+        return (match.group(1) if match.lastindex else match.group(0)).strip()
+
+    contact_obj = payload.get("contact") or {}
+    attrs = contact_obj.get("additional_attributes") or {}
+    for key in ("shopify_cart_id", "cart_id", "shopifyCartId"):
+        value = attrs.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    return ""
+
+
+def _extract_variant_id(content: str) -> str:
+    text = content.strip()
+    gid_match = re.search(r"\bgid://shopify/ProductVariant/\d+", text, flags=re.IGNORECASE)
+    if gid_match:
+        return gid_match.group(0)
+
+    num_match = re.search(r"\bvariant(?:e)?\s*(?:id)?\s*[:#]?\s*(\d{4,})\b", text, flags=re.IGNORECASE)
+    if num_match:
+        return f"gid://shopify/ProductVariant/{num_match.group(1)}"
+
+    return ""
+
+
+def _extract_quantity(content: str, default: int = 1) -> int:
+    text = content.lower()
+    qty_match = re.search(r"\b(?:qtd|quantidade|qty)\s*[:=]?\s*(\d{1,3})\b", text)
+    if qty_match:
+        return max(1, int(qty_match.group(1)))
+
+    generic_match = re.search(r"\b(\d{1,3})\s*(?:un|unid|unidade|itens?)\b", text)
+    if generic_match:
+        return max(1, int(generic_match.group(1)))
+
+    return default
+
+
+def _detect_cart_action(content: str) -> str:
+    text = content.lower()
+    if any(term in text for term in ("checkout", "finalizar", "pagar", "fechar compra")):
+        return "checkout"
+    if any(term in text for term in ("remover", "tirar", "excluir", "deletar")):
+        return "remove"
+    if any(term in text for term in ("atualizar", "alterar", "mudar quantidade", "quantidade")):
+        return "update"
+    if any(term in text for term in ("adicionar", "incluir", "colocar")):
+        return "add"
+    return "get"
 
 
 def verify_signature(raw_body: bytes) -> bool:
@@ -204,9 +538,15 @@ def _call_ollama(messages: list[dict[str, str]], model: str, timeout: int) -> st
         "messages": messages,
         "keep_alive": OLLAMA_KEEP_ALIVE,
     }
+
+    options: dict[str, Any] = {}
     if OLLAMA_NUM_GPU is not None:
         # num_gpu controls how many layers should be offloaded to GPU in Ollama.
-        payload["options"] = {"num_gpu": OLLAMA_NUM_GPU}
+        options["num_gpu"] = OLLAMA_NUM_GPU
+    if OLLAMA_NUM_CTX is not None:
+        options["num_ctx"] = OLLAMA_NUM_CTX
+    if options:
+        payload["options"] = options
 
     response = requests.post(
         url,
@@ -231,13 +571,13 @@ def _call_ollama(messages: list[dict[str, str]], model: str, timeout: int) -> st
 
 
 def build_prompt(payload: dict[str, Any]) -> tuple[list[dict[str, str]], dict[str, Any]]:
-    """Phase 4 orchestration: build the full prompt for the LLM.
+    """Orchestration: build the full prompt for the LLM.
 
-    1. Detect intent
+    1. Detect intent (regex, fast) — agora com sinais auxiliares (Melhoria 9)
     2. Collect conversation history
-    3. Consult RAG documents (all intents)
-    4. Consult Shopify mock (ORDER / PRODUCT intents)
-    5. Compose final messages list
+    3. Query Planner — condicional (Melhoria 3)
+    4. Retrieve: RAG docs + políticas (fallback determinístico) + Shopify
+    5. Compose final messages list — com evidências estruturadas (Melhorias 1, 6)
 
     Returns (messages, trace) where *trace* carries all intermediate data
     for a single consolidated debug log in :func:`generate_reply`.
@@ -252,9 +592,13 @@ def build_prompt(payload: dict[str, Any]) -> tuple[list[dict[str, str]], dict[st
     conversation_id = conversation.get("id")
 
     t0 = time.time()
+    timings: dict[str, float] = {}
 
-    # ---- 1. Detect intent -----------------------------------------------
-    detected_intent = intent_mod.detect_intent(content)
+    # ---- 1. Detect intent (regex — fast) — Melhoria 9 ------------------
+    t_intent = time.time()
+    intent_result = intent_mod.detect_intent_enriched(content)
+    regex_intent = intent_result.intent
+    timings["intent_ms"] = round((time.time() - t_intent) * 1000, 1)
 
     # ---- 2. Conversation history ----------------------------------------
     history: list[dict[str, str]] = []
@@ -268,78 +612,306 @@ def build_prompt(payload: dict[str, Any]) -> tuple[list[dict[str, str]], dict[st
 
     history_context = chat_history.format_history_context(history)
 
-    # ---- 3. Tool context (Shopify / RAG) --------------------------------
-    shopify_context = ""
-    rag_context = ""
-    tool_context = ""
-    rag_chunks_count = 0
-    raw_rag_chunks: list[Any] = []
+    # ---- 3. Query Planner (condicional — Melhoria 3) --------------------
+    t_planner = time.time()
+    planner_used, planner_skip_reason = should_use_query_planner(
+        content, intent_result, history_context,
+    )
 
+    planned: dict[str, str] = {}
+    planner_raw = ""
+    if planner_used:
+        planned = _call_query_planner(content, str(regex_intent), history_context)
+        if planned:
+            planner_raw = str(planned)
+    timings["planner_ms"] = round((time.time() - t_planner) * 1000, 1)
+
+    # Resolve final intent (planner can override regex)
+    planned_intent_str = planned.get("intent", "").strip().lower()
+    intent_map = {
+        "order": Intent.ORDER,
+        "product": Intent.PRODUCT,
+        "institutional": Intent.INSTITUTIONAL,
+        "general": Intent.GENERAL,
+    }
+    detected_intent = intent_map.get(planned_intent_str, regex_intent)
+
+    # Resolve search queries
+    rag_query = planned.get("rag_query", "").strip() or content
+    product_search_query = planned.get("product_query", "").strip()
+    policy_query = planned.get("policy_query", "").strip()
+
+    # Fallback: if planner didn't produce product_query for PRODUCT intent
+    if detected_intent == Intent.PRODUCT and not product_search_query:
+        product_search_query = intent_mod.extract_product_query(content) or content
+
+    # ---- 4. Retrieve: RAG + políticas + Shopify -------------------------
+    shopify_context = ""
+    rag_evidence_context = ""
+    policy_evidence_context = ""
+    policy_context = ""
+    tool_context = ""
+    rag_results_raw_count = 0
+    rag_results_filtered_count = 0
+    raw_rag_results: list[RAGSearchResult] = []
+
+    # 4a. RAG document search — agora usa search_documents_detailed (Melhoria 1)
+    t_rag = time.time()
     try:
-        raw_rag_chunks = search_documents(content)
-        rag_chunks_count = len(raw_rag_chunks)
-        rag_context = format_rag_context(raw_rag_chunks)
+        raw_rag_results = search_documents_detailed(rag_query)
+        rag_results_raw_count = len(raw_rag_results)
+        rag_evidence_context = format_rag_evidence_context(raw_rag_results)
     except Exception as exc:
         logger.warning("RAG search failed: %s", exc)
+    timings["rag_ms"] = round((time.time() - t_rag) * 1000, 1)
 
-    if detected_intent == Intent.ORDER:
-        order_number = intent_mod.extract_order_number(content)
-        if order_number:
-            order = _shopify.get_order_status(order_number)
-            if order:
-                shopify_context = _shopify.format_order_response(order)
-            else:
-                shopify_context = (
-                    f"Nenhum pedido encontrado com o número #{order_number}. "
-                    "Verifique se o número está correto."
+    # 4b. Fallback determinístico de políticas (Melhoria 4)
+    # Dispara busca de políticas quando há forte indício, mesmo sem planner.
+    policy_fallback_query = _build_policy_search_query(content, intent_result)
+    if policy_fallback_query and not policy_query:
+        # Usar fallback determinístico — planner não gerou policy_query
+        policy_query = policy_fallback_query
+
+    if policy_query:
+        try:
+            policy_results = search_documents_detailed(policy_query)
+            if policy_results:
+                policy_evidence_context = format_rag_evidence_context(
+                    policy_results,
                 )
-        else:
+        except Exception as exc:
+            logger.warning("Policy RAG search failed: %s", exc)
+
+    # 4c. Shopify policy search (se planner gerou policy_query e módulo suporta)
+    if policy_query and hasattr(_shopify, "search_policies"):
+        try:
+            shopify_policy = _shopify.search_policies(policy_query)
+            if shopify_policy:
+                policy_context = shopify_policy
+        except Exception as exc:
+            logger.warning("Shopify policy search failed: %s", exc)
+
+    # 4d. Shopify context (cart, order or product)
+    t_shopify = time.time()
+    if _is_cart_message(content):
+        cart_action = _detect_cart_action(content)
+        cart_id = _extract_cart_id(content, payload)
+        variant_id = _extract_variant_id(content)
+        quantity = _extract_quantity(content, default=1)
+
+        if not cart_id and cart_action in ("get", "checkout", "update", "remove"):
             shopify_context = (
-                "Para consultar um pedido, por favor informe o número do pedido."
+                "Para operar o carrinho preciso do cart_id. "
+                "Envie o identificador do carrinho (ex.: gid://shopify/Cart/...)."
+            )
+        elif cart_action == "add":
+            if not variant_id:
+                shopify_context = (
+                    "Para adicionar no carrinho preciso do variant_id do produto "
+                    "(ex.: gid://shopify/ProductVariant/1234567890)."
+                )
+            elif hasattr(_shopify, "add_to_cart") and hasattr(_shopify, "format_cart_response"):
+                cart_payload = _shopify.add_to_cart(cart_id, variant_id, quantity=quantity)
+                shopify_context = _shopify.format_cart_response(cart_payload, "adicao")
+            else:
+                shopify_context = "Operacoes de carrinho nao estao disponiveis neste modo."
+        elif cart_action == "update":
+            if hasattr(_shopify, "update_cart_item") and hasattr(_shopify, "format_cart_response"):
+                cart_payload = _shopify.update_cart_item(
+                    cart_id,
+                    quantity,
+                    variant_id=variant_id,
+                )
+                shopify_context = _shopify.format_cart_response(cart_payload, "atualizacao")
+            else:
+                shopify_context = "Operacoes de carrinho nao estao disponiveis neste modo."
+        elif cart_action == "remove":
+            if hasattr(_shopify, "remove_from_cart") and hasattr(_shopify, "format_cart_response"):
+                cart_payload = _shopify.remove_from_cart(cart_id, variant_id=variant_id)
+                shopify_context = _shopify.format_cart_response(cart_payload, "remocao")
+            else:
+                shopify_context = "Operacoes de carrinho nao estao disponiveis neste modo."
+        elif cart_action == "checkout":
+            if hasattr(_shopify, "get_cart_checkout_url"):
+                checkout_url = _shopify.get_cart_checkout_url(cart_id)
+                if checkout_url:
+                    shopify_context = f"Checkout do carrinho: {checkout_url}"
+                else:
+                    shopify_context = (
+                        "Nao consegui obter o checkout agora. "
+                        "Confirme o cart_id e tente novamente."
+                    )
+            else:
+                shopify_context = "Operacoes de checkout do carrinho nao estao disponiveis neste modo."
+        else:
+            if hasattr(_shopify, "get_cart") and hasattr(_shopify, "format_cart_response"):
+                cart_payload = _shopify.get_cart(cart_id)
+                shopify_context = _shopify.format_cart_response(cart_payload, "consulta")
+            else:
+                shopify_context = "Operacoes de carrinho nao estao disponiveis neste modo."
+
+    elif detected_intent == Intent.ORDER:
+        def _extract_customer_identifiers() -> tuple[str | None, str | None, str | None]:
+            contact_obj = payload.get("contact") or {}
+            attrs = contact_obj.get("additional_attributes") or {}
+
+            email = (
+                (contact_obj.get("email") or attrs.get("email") or "").strip().lower()
+                or None
+            )
+            phone = (
+                (contact_obj.get("phone_number") or attrs.get("phone_number") or "").strip()
+                or None
+            )
+            cpf = (
+                (attrs.get("cpf") or "").strip()
+                or None
             )
 
+            if not cpf:
+                cpf_match = re.search(r"\b(\d{3}\.?\d{3}\.?\d{3}-?\d{2})\b", content)
+                if cpf_match:
+                    cpf = cpf_match.group(1)
+
+            return email, phone, cpf
+
+        order_number = intent_result.order_number or intent_mod.extract_order_number(content)
+        capability_checker = getattr(_shopify, "is_order_lookup_available", None)
+        if callable(capability_checker):
+            supports_order_lookup = bool(capability_checker())
+        else:
+            supports_order_lookup = bool(getattr(_shopify, "SUPPORTS_ORDER_LOOKUP", True))
+        if order_number:
+            if supports_order_lookup:
+                order = _shopify.get_order_status(order_number)
+                if order:
+                    shopify_context = _shopify.format_order_response(order)
+                else:
+                    shopify_context = (
+                        f"Nenhum pedido encontrado com o número #{order_number}. "
+                        "Verifique se o número está correto."
+                    )
+            else:
+                shopify_context = (
+                    "Este canal usa somente Shopify Storefront MCP e nao tem acesso "
+                    "a dados privados de pedidos. Para consultar status do pedido "
+                    f"#{order_number}, encaminhe para atendimento humano/autenticado."
+                )
+        else:
+            summary = None
+            email, phone, cpf = _extract_customer_identifiers()
+            if supports_order_lookup and hasattr(_shopify, "get_customer_purchase_summary"):
+                try:
+                    summary = _shopify.get_customer_purchase_summary(
+                        content,
+                        email=email,
+                        phone=phone,
+                        cpf=cpf,
+                    )
+                except Exception as exc:
+                    logger.warning("Customer purchase summary failed: %s", exc)
+
+            if summary:
+                shopify_context = summary
+            else:
+                if supports_order_lookup:
+                    shopify_context = (
+                        "Para consultar um pedido, informe o numero do pedido. "
+                        "Se preferir, informe tambem e-mail/telefone (ou CPF com validacao adicional) "
+                        "para localizar pedidos recentes no cadastro."
+                    )
+                else:
+                    shopify_context = (
+                        "Este canal usa somente Shopify Storefront MCP e nao consulta "
+                        "historico de pedidos de clientes. Encaminhe para atendimento humano "
+                        "ou canal autenticado para status de pedido."
+                    )
+
     elif detected_intent == Intent.PRODUCT:
-        products = _shopify.search_products(content, limit=3)
-        shopify_context = _shopify.format_products_response(products, content)
+        products = _shopify.search_products(product_search_query, limit=3)
+        shopify_context = _shopify.format_products_response(products, product_search_query)
 
-    context_parts = [part for part in (shopify_context, rag_context) if part]
-    tool_context = "\n\n---\n\n".join(context_parts)
+    elif hasattr(_shopify, "list_available_resources") and any(
+        term in content.lower() for term in ("recurso", "ferramenta", "capacidades", "mcp")
+    ):
+        shopify_context = _shopify.list_available_resources()
+    timings["shopify_ms"] = round((time.time() - t_shopify) * 1000, 1)
 
-    # ---- 4. Build user message ------------------------------------------
+    # ---- 5. Build user message (Melhoria 6 — prompt robusto) ------------
+    # Separa claramente cada tipo de contexto com rótulos para o modelo.
     sections: list[str] = [
         f"Canal: {channel}",
         f"Cliente: {contact_name}",
     ]
 
+    # [HISTÓRICO]
     if history_context:
-        sections.append(f"Histórico recente da conversa:\n{history_context}")
+        sections.append(f"[HISTÓRICO DA CONVERSA]\n{history_context}")
 
-    if tool_context:
-        sections.append(f"Dados disponíveis para esta resposta:\n{tool_context}")
-
-    sections.append(f"Mensagem atual do cliente: {content}")
-    if not tool_context:
+    # [EVIDÊNCIAS DOCUMENTAIS] — Melhoria 1: inclui fonte, score, trecho
+    has_doc_evidence = bool(rag_evidence_context)
+    if rag_evidence_context:
         sections.append(
-            "Nenhuma informação relevante foi encontrada nos documentos para esta mensagem. "
-            "Avise que não encontrou no material disponível e peça mais detalhes objetivos."
+            f"[EVIDÊNCIAS DOCUMENTAIS]\n"
+            f"As evidências abaixo foram recuperadas dos documentos da empresa. "
+            f"Use-as como base principal para responder.\n\n{rag_evidence_context}"
         )
-    sections.append(
-        "Responda de forma objetiva e útil. "
-        "Se faltar contexto, faça uma pergunta curta. "
-        "Não invente dados que não foram fornecidos acima."
+
+    # [POLÍTICAS] — Melhoria 4: fallback determinístico
+    all_policy = "\n\n".join(
+        p for p in (policy_evidence_context, policy_context) if p
     )
+    if all_policy:
+        sections.append(f"[POLÍTICAS DA EMPRESA]\n{all_policy}")
+
+    # [CONTEXTO SHOPIFY]
+    if shopify_context:
+        sections.append(f"[CONTEXTO SHOPIFY]\n{shopify_context}")
+
+    # [MENSAGEM DO CLIENTE]
+    sections.append(f"[MENSAGEM DO CLIENTE]\n{content}")
+
+    # Instruções de grounding para o modelo (Melhoria 6)
+    if has_doc_evidence or all_policy or shopify_context:
+        grounding_instructions = (
+            "INSTRUÇÕES DE RESPOSTA:\n"
+            "- Responda com base PRIMEIRO nas evidências documentais e políticas fornecidas acima.\n"
+            "- NÃO invente políticas, preços, prazos nem detalhes que não estejam nas evidências.\n"
+            "- Se a evidência for insuficiente para uma resposta completa, diga explicitamente "
+            "que não encontrou informação suficiente no material disponível.\n"
+            "- Faça pergunta curta apenas se realmente faltar informação crítica para ajudar.\n"
+            "- Responda de forma objetiva e útil em português do Brasil."
+        )
+        if detected_intent == Intent.PRODUCT and shopify_context:
+            grounding_instructions += (
+                "\n- IMPORTANTE: os produtos listados no CONTEXTO SHOPIFY existem no catálogo. "
+                "Apresente-os ao cliente. Não diga que não temos o produto se ele aparece acima."
+            )
+    else:
+        # Nenhuma evidência — instruir modelo a não inventar (Melhoria 6)
+        grounding_instructions = (
+            "INSTRUÇÕES DE RESPOSTA:\n"
+            "- NOTA: Nenhuma evidência documental foi encontrada para esta mensagem.\n"
+            "- NÃO assuma informações sobre a empresa, políticas ou produtos.\n"
+            "- Informe que não encontrou no material disponível e peça mais detalhes objetivos.\n"
+            "- Responda de forma objetiva e útil em português do Brasil."
+        )
+    sections.append(grounding_instructions)
 
     user_message = "\n\n".join(sections)
 
-    # ---- 5. Metrics log --------------------------------------------------
+    # ---- 6. Metrics log (Melhoria 7 — timings) --------------------------
+    timings["total_ms"] = round((time.time() - t0) * 1000, 1)
     prompt_chars = len(OLLAMA_SYSTEM_PROMPT) + len(user_message)
     logger.info(
-        "Prompt built | intent=%s history_msgs=%d rag_chunks=%d prompt_chars=%d elapsed=%.2fs",
+        "Prompt built | intent=%s planner=%s(%s) history_msgs=%d rag_evidence=%d prompt_chars=%d timings=%s",
         detected_intent,
+        planner_used,
+        planner_skip_reason,
         len(history),
-        rag_chunks_count,
+        rag_results_raw_count,
         prompt_chars,
-        time.time() - t0,
+        timings,
     )
 
     messages = [
@@ -347,63 +919,169 @@ def build_prompt(payload: dict[str, Any]) -> tuple[list[dict[str, str]], dict[st
         {"role": "user", "content": user_message},
     ]
 
+    # ---- Melhoria 7 — trace enriquecido para observabilidade ------------
     trace: dict[str, Any] = {
         "user_input": content,
+        "regex_intent": str(regex_intent),
         "intent": str(detected_intent),
+        "intent_signals": {
+            "has_order_id": intent_result.has_order_id,
+            "has_policy_terms": intent_result.has_policy_terms,
+            "has_product_terms": intent_result.has_product_terms,
+            "order_number": intent_result.order_number,
+        },
+        "planner_used": planner_used,
+        "planner_skip_reason": planner_skip_reason,
+        "planner_raw": planner_raw,
+        "planned_rag_query": rag_query,
+        "planned_product_query": product_search_query,
+        "planned_policy_query": policy_query,
+        "policy_fallback_used": bool(policy_fallback_query and not planned.get("policy_query")),
+        "product_search_query": product_search_query,
         "history_context": history_context,
-        "rag_chunks": [
-            getattr(chunk, "page_content", None) or (chunk if isinstance(chunk, str) else str(chunk))
-            for chunk in raw_rag_chunks
+        "rag_evidence": [
+            {
+                "source": r.source,
+                "source_path": r.source_path,
+                "score": round(r.score, 3),
+                "distance": round(r.distance, 4) if r.distance is not None else None,
+            }
+            for r in raw_rag_results
         ],
-        "tool_context": tool_context,
+        "rag_results_raw_count": rag_results_raw_count,
+        "rag_chunks": [r.text for r in raw_rag_results],
+        "shopify_context": shopify_context,
+        "policy_context": all_policy,
+        "tool_context": rag_evidence_context,
         "system_prompt": OLLAMA_SYSTEM_PROMPT,
         "user_message": user_message,
+        "timings": timings,
     }
 
     return messages, trace
 
 
 def _log_full_trace(trace: dict[str, Any], model_used: str, reply: str, elapsed: float) -> None:
-    """Emit a single log entry with the complete request/response lifecycle."""
+    """Emit one block per inference to both console logger and the inference file.
+
+    Melhoria 5: quando DEBUG_INFERENCE_TRACE=false (padrão), emite apenas
+    resumo compacto.  Quando true, emite trace completo porém sanitizado.
+    Melhoria 7: inclui timings, scores, decisão do planner e contagens.
+    """
     sep = "─" * 72
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    # ---- Resumo compacto (sempre emitido) ----
+    timings = trace.get("timings", {})
+    rag_evidence = trace.get("rag_evidence", [])
+    summary_lines = [
+        "",
+        sep,
+        f"TRACE SUMMARY  [{ts}]  model={model_used}  elapsed={elapsed:.2f}s",
+        sep,
+        f"  regex_intent     = {trace.get('regex_intent', '?')}",
+        f"  final_intent     = {trace.get('intent', '?')}",
+        f"  planner_used     = {trace.get('planner_used', '?')}  reason={trace.get('planner_skip_reason', '?')}",
+        f"  policy_fallback  = {trace.get('policy_fallback_used', False)}",
+        f"  rag_evidence     = {trace.get('rag_results_raw_count', 0)} retrieved",
+        f"  intent_signals   = {trace.get('intent_signals', {})}",
+    ]
+    # Score de cada evidência (Melhoria 7)
+    for ev in rag_evidence:
+        summary_lines.append(
+            f"    - {ev.get('source', '?')}  score={ev.get('score', '?')}  dist={ev.get('distance', '?')}"
+        )
+    summary_lines.append(f"  timings          = {timings}")
+    summary_lines.append(sep)
+
+    summary_text = "\n".join(summary_lines)
+    logger.info(summary_text)
+    _inference_logger.info(summary_text)
+
+    # ---- Trace completo (apenas com DEBUG_INFERENCE_TRACE=true) ----
+    if not DEBUG_INFERENCE_TRACE:
+        return
+
+    # Sanitizar dados sensíveis antes de gravar (Melhoria 5)
+    s = _sanitize_for_log
+    t = _truncate_for_log
+
     lines = [
         "",
+        f"TRACE — FULL PIPELINE  [{ts}]",
         sep,
-        "TRACE — FULL PIPELINE",
-        sep,
-        f"[INTENT]        {trace['intent']}",
+        f"[REGEX INTENT]  {trace.get('regex_intent', '?')}",
+        f"[FINAL INTENT]  {trace['intent']}",
+        f"[INTENT SIGNALS]  {trace.get('intent_signals', {})}",
         "",
         "[ENTRADA — mensagem do usuário]",
-        trace["user_input"],
+        s(trace["user_input"]),
     ]
 
-    if trace["history_context"]:
-        lines += ["", "[HISTÓRICO DA CONVERSA]", trace["history_context"]]
-
-    if trace["rag_chunks"]:
-        lines += ["", f"[EMBEDDINGS — {len(trace['rag_chunks'])} chunk(s) recuperado(s)]"]
-        for i, chunk in enumerate(trace["rag_chunks"], 1):
-            lines.append(f"  [{i}] {chunk}")
+    # Query Planner block
+    if trace.get("planner_used"):
+        lines += [
+            "",
+            f"[QUERY PLANNER — used=True]",
+            s(str(trace.get("planner_raw", ""))),
+            f"  rag_query      = {s(trace.get('planned_rag_query', ''))}",
+            f"  product_query  = {s(trace.get('planned_product_query', ''))}",
+            f"  policy_query   = {s(trace.get('planned_policy_query', ''))}",
+        ]
     else:
-        lines += ["", "[EMBEDDINGS]    (nenhum chunk recuperado)"]
+        lines += [
+            "",
+            f"[QUERY PLANNER] skipped — reason={trace.get('planner_skip_reason', '?')}",
+        ]
 
-    if trace["tool_context"]:
-        lines += ["", "[CONTEXTO DE FERRAMENTA (Shopify / RAG formatado)]", trace["tool_context"]]
+    if trace.get("policy_fallback_used"):
+        lines += ["", "[POLICY FALLBACK] determinístico ativado (Melhoria 4)"]
+
+    if trace.get("product_search_query"):
+        lines += ["", "[SHOPIFY QUERY — busca de produto]", s(trace["product_search_query"])]
+
+    if trace.get("history_context"):
+        lines += ["", "[HISTÓRICO DA CONVERSA]", s(t(trace["history_context"]))]
+
+    # Evidências RAG com scores (Melhoria 7)
+    rag_chunks = trace.get("rag_chunks", [])
+    if rag_chunks:
+        lines += ["", f"[EVIDÊNCIAS RAG — {len(rag_chunks)} recuperada(s)]"]
+        for i, (chunk, ev) in enumerate(
+            zip(rag_chunks, rag_evidence + [{}] * max(0, len(rag_chunks) - len(rag_evidence))),
+            1,
+        ):
+            score_info = f"  score={ev.get('score', '?')}  dist={ev.get('distance', '?')}" if ev else ""
+            lines.append(f"  [{i}]{score_info}")
+            lines.append(f"  {s(t(chunk))}")
+    else:
+        lines += ["", "[EVIDÊNCIAS RAG]  (nenhuma recuperada)"]
+
+    shopify_ctx = trace.get("shopify_context", "")
+    if shopify_ctx:
+        lines += ["", "[SHOPIFY — dados brutos]", s(t(shopify_ctx))]
+    else:
+        lines += ["", "[SHOPIFY]  (vazio)"]
+
+    policy_ctx = trace.get("policy_context", "")
+    if policy_ctx:
+        lines += ["", "[POLÍTICAS]", s(t(policy_ctx))]
 
     lines += [
         "",
         "[PROMPT — system]",
-        trace["system_prompt"],
+        t(trace["system_prompt"]),
         "",
-        "[PROMPT — user message enviada ao modelo]",
-        trace["user_message"],
+        "[PROMPT — user message]",
+        s(t(trace["user_message"], 2000)),
         "",
         f"[RESPOSTA — model={model_used}  elapsed={elapsed:.2f}s]",
-        reply,
+        s(reply),
         sep,
     ]
 
-    logger.info("\n".join(lines))
+    full_text = "\n".join(lines)
+    _inference_logger.info(full_text)
 
 
 def generate_reply(payload: dict[str, Any]) -> str:
@@ -571,9 +1249,45 @@ def webhook() -> tuple[Response, int] | Response:
     return jsonify({"status": "accepted"}), 202
 
 
-# Auto-ingest RAG documents on startup (runs in background, non-blocking)
-threading.Thread(target=ingest_documents, daemon=True, name="rag-ingest").start()
+# ---------------------------------------------------------------------------
+# Melhoria 8 — inicialização explícita para prontidão de produção.
+#
+# Em execução local (python app.py), initialize_app() é chamada
+# automaticamente.  Em ambientes WSGI/Gunicorn, o deployer deve chamar
+# initialize_app() explicitamente no ponto de entrada ou via app factory,
+# por exemplo:
+#
+#   from app import app, initialize_app
+#   initialize_app()
+#   # gunicorn app:app
+#
+# Isso evita que threads de ingestão sejam iniciadas durante o import
+# do módulo (o que pode causar problemas com forking em Gunicorn preload).
+# ---------------------------------------------------------------------------
+
+_initialized = False
+
+
+def initialize_app() -> None:
+    """Inicializa threads de background (ingestão RAG + worker).
+
+    Seguro para chamar múltiplas vezes — só executa na primeira chamada.
+    Em WSGI com múltiplos workers, cada worker deve chamar uma vez.
+    """
+    global _initialized  # noqa: PLW0603
+    if _initialized:
+        return
+    _initialized = True
+
+    # Ingestão RAG em background (não-bloqueante)
+    threading.Thread(target=ingest_documents, daemon=True, name="rag-ingest").start()
+    logger.info("RAG ingest thread started")
+
+    # Worker de processamento de jobs (auto-reply)
+    threading.Thread(target=worker, daemon=True, name="reply-worker").start()
+    logger.info("Reply worker thread started")
+
 
 if __name__ == "__main__":
-    threading.Thread(target=worker, daemon=True).start()
+    initialize_app()
     app.run(host="0.0.0.0", port=8000)

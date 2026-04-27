@@ -29,6 +29,38 @@ logger = logging.getLogger("auto-reply-bridge.rag")
 _MODULE_DIR = Path(__file__).resolve().parent
 
 
+def _read_bounded_int_env(
+    var_name: str, default: int, min_value: int, max_value: int
+) -> int:
+    value = os.getenv(var_name, "").strip()
+    if not value:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r; using default=%s", var_name, value, default)
+        return default
+
+    if parsed < min_value:
+        logger.warning("%s=%s below minimum %s; clamping", var_name, parsed, min_value)
+        return min_value
+    if parsed > max_value:
+        logger.warning("%s=%s above maximum %s; clamping", var_name, parsed, max_value)
+        return max_value
+    return parsed
+
+
+def _read_optional_int_env(var_name: str) -> Optional[int]:
+    value = os.getenv(var_name, "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r; ignoring", var_name, value)
+        return None
+
+
 def _resolve_path_setting(value: str, default_relative: str) -> str:
     """Resolve a configured path, treating relative paths as module-relative."""
     raw = (value or "").strip()
@@ -51,14 +83,66 @@ RAG_MAX_CONTEXT_CHARS = int(os.getenv("RAG_MAX_CONTEXT_CHARS", "2500"))
 RAG_EMBED_MODEL = os.getenv("RAG_EMBED_MODEL", "nomic-embed-text")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
 RAG_OLLAMA_BASE_URL = os.getenv("RAG_OLLAMA_BASE_URL", OLLAMA_BASE_URL).rstrip("/")
+OLLAMA_TIMEOUT_MAX_SECONDS = _read_bounded_int_env(
+    "OLLAMA_TIMEOUT_MAX_SECONDS", default=300, min_value=30, max_value=1800
+)
+OLLAMA_MAIN_TIMEOUT = _read_bounded_int_env(
+    "OLLAMA_MAIN_TIMEOUT", default=90, min_value=5, max_value=OLLAMA_TIMEOUT_MAX_SECONDS
+)
+RAG_OLLAMA_REQUEST_TIMEOUT = _read_bounded_int_env(
+    "RAG_OLLAMA_REQUEST_TIMEOUT",
+    default=OLLAMA_MAIN_TIMEOUT,
+    min_value=5,
+    max_value=OLLAMA_TIMEOUT_MAX_SECONDS,
+)
+RAG_OLLAMA_TAGS_TIMEOUT = _read_bounded_int_env(
+    "RAG_OLLAMA_TAGS_TIMEOUT", default=10, min_value=2, max_value=120
+)
+RAG_OLLAMA_KEEP_ALIVE = os.getenv(
+    "RAG_OLLAMA_KEEP_ALIVE", os.getenv("OLLAMA_KEEP_ALIVE", "5m")
+).strip()
+RAG_OLLAMA_NUM_GPU = _read_optional_int_env("RAG_OLLAMA_NUM_GPU")
+if RAG_OLLAMA_NUM_GPU is None:
+    RAG_OLLAMA_NUM_GPU = _read_optional_int_env("OLLAMA_NUM_GPU")
 RAG_EMBED_RECHECK_SECONDS = int(os.getenv("RAG_EMBED_RECHECK_SECONDS", "30"))
-_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "350"))
-_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "80"))
+_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "600"))
+_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "150"))
 RAG_RECALL_K = int(os.getenv("RAG_RECALL_K", "12"))
 RAG_EXPANDED_CONTEXT_CHARS = int(os.getenv("RAG_EXPANDED_CONTEXT_CHARS", "2200"))
 RAG_RERANK_MODEL = os.getenv("RAG_RERANK_MODEL", "").strip()
 RAG_RERANK_TIMEOUT = int(os.getenv("RAG_RERANK_TIMEOUT", "60"))
 RAG_RERANK_CANDIDATES = int(os.getenv("RAG_RERANK_CANDIDATES", "6"))
+
+# ---------------------------------------------------------------------------
+# Melhoria 2 — threshold mínimo de relevância.
+# Resultados abaixo de RAG_MIN_SCORE (score composto) são descartados antes
+# de serem enviados ao modelo, evitando contexto fraco ou irrelevante.
+# RAG_MAX_DISTANCE filtra pela distância coseno bruta (opcional).
+# ---------------------------------------------------------------------------
+
+def _read_float_env(var_name: str, default: float) -> float:
+    raw = os.getenv(var_name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid float for %s=%r; using default=%s", var_name, raw, default)
+        return default
+
+RAG_MIN_SCORE = _read_float_env("RAG_MIN_SCORE", 0.4)
+RAG_MAX_DISTANCE = _read_float_env("RAG_MAX_DISTANCE", 0.0)  # 0.0 = desabilitado
+
+logger.info(
+    "RAG Ollama settings | base_url=%s keep_alive=%s timeout=%ss tags_timeout=%ss num_gpu=%s min_score=%s max_distance=%s",
+    RAG_OLLAMA_BASE_URL,
+    RAG_OLLAMA_KEEP_ALIVE,
+    RAG_OLLAMA_REQUEST_TIMEOUT,
+    RAG_OLLAMA_TAGS_TIMEOUT,
+    RAG_OLLAMA_NUM_GPU if RAG_OLLAMA_NUM_GPU is not None else "default",
+    RAG_MIN_SCORE,
+    RAG_MAX_DISTANCE if RAG_MAX_DISTANCE > 0 else "off",
+)
 
 # Module-level singletons so Chroma is initialised once per process.
 _chroma_client = None
@@ -152,7 +236,9 @@ def _check_embed_model_available() -> bool:
     _embed_model_checked = True
 
     try:
-        response = requests.get(f"{RAG_OLLAMA_BASE_URL}/api/tags", timeout=10)
+        response = requests.get(
+            f"{RAG_OLLAMA_BASE_URL}/api/tags", timeout=RAG_OLLAMA_TAGS_TIMEOUT
+        )
         response.raise_for_status()
 
         models = (response.json().get("models") or [])
@@ -213,9 +299,16 @@ def _get_embedding(text: str) -> Optional[list[float]]:
     last_error: Optional[Exception] = None
 
     # Try both API shapes to support different Ollama versions.
+    embed_payload: dict[str, Any] = {
+        "model": RAG_EMBED_MODEL,
+        "keep_alive": RAG_OLLAMA_KEEP_ALIVE,
+    }
+    if RAG_OLLAMA_NUM_GPU is not None:
+        embed_payload["options"] = {"num_gpu": RAG_OLLAMA_NUM_GPU}
+
     attempts = [
-        ("/api/embed", {"model": RAG_EMBED_MODEL, "input": text}),
-        ("/api/embeddings", {"model": RAG_EMBED_MODEL, "prompt": text}),
+        ("/api/embed", {**embed_payload, "input": text}),
+        ("/api/embeddings", {**embed_payload, "prompt": text}),
     ]
 
     saw_404 = False
@@ -225,7 +318,7 @@ def _get_embedding(text: str) -> Optional[list[float]]:
                 response = requests.post(
                     f"{RAG_OLLAMA_BASE_URL}{path}",
                     json=body,
-                    timeout=30,
+                    timeout=RAG_OLLAMA_REQUEST_TIMEOUT,
                 )
                 response.raise_for_status()
                 embedding = _extract_embedding(response.json())
@@ -351,18 +444,23 @@ def _call_rerank_model(query: str, candidates: list[RAGSearchResult]) -> list[st
         )
 
     try:
+        payload: dict[str, Any] = {
+            "model": RAG_RERANK_MODEL,
+            "stream": False,
+            "keep_alive": RAG_OLLAMA_KEEP_ALIVE,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "\n".join(prompt_lines),
+                }
+            ],
+        }
+        if RAG_OLLAMA_NUM_GPU is not None:
+            payload["options"] = {"num_gpu": RAG_OLLAMA_NUM_GPU}
+
         response = requests.post(
             f"{RAG_OLLAMA_BASE_URL}/api/chat",
-            json={
-                "model": RAG_RERANK_MODEL,
-                "stream": False,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": "\n".join(prompt_lines),
-                    }
-                ],
-            },
+            json=payload,
             timeout=RAG_RERANK_TIMEOUT,
         )
         response.raise_for_status()
@@ -385,10 +483,30 @@ def _chunk_text(
     return [chunk for chunk, _start, _end in _chunk_text_with_offsets(text, size, overlap)]
 
 
+# ---------------------------------------------------------------------------
+# Melhoria 10 — regex para detectar títulos / seções em documentos
+# empresariais.  Usado por _chunk_text_with_offsets para preferir quebrar
+# ANTES de um título, preservando blocos semânticos coesos.
+# ---------------------------------------------------------------------------
+_HEADING_RE = re.compile(
+    r"^(?:"
+    r"#{1,4}\s+"           # Markdown headings: # Título, ## Sub, etc.
+    r"|[A-ZÀ-Ú][A-ZÀ-Ú0-9 ,]{4,}$"  # Linhas ALL-CAPS (ex.: "POLÍTICA DE TROCAS")
+    r"|\*\*[^*]+\*\*\s*$"  # **Bold title** em linha própria
+    r"|\d+[\.\)]\s+"       # Listas numeradas: 1. Item, 2) Item
+    r")",
+    re.MULTILINE,
+)
+
+
 def _chunk_text_with_offsets(
     text: str, size: int = _CHUNK_SIZE, overlap: int = _CHUNK_OVERLAP
 ) -> list[tuple[str, int, int]]:
-    """Split *text* into overlapping chunks and preserve original offsets."""
+    """Split *text* into overlapping chunks and preserve original offsets.
+
+    Melhoria 10: detecta títulos (Markdown #, linhas ALL-CAPS, **bold**)
+    e prefere quebrar ANTES deles, mantendo seções coesas nos chunks.
+    """
     if not text:
         return []
 
@@ -400,16 +518,35 @@ def _chunk_text_with_offsets(
         cleaned = text.strip()
         return [(cleaned, 0, len(text))] if cleaned else []
 
+    # Pré-calcular posições de títulos para preferir quebra antes deles
+    heading_positions: set[int] = set()
+    for m in _HEADING_RE.finditer(text):
+        heading_positions.add(m.start())
+
     chunks: list[tuple[str, int, int]] = []
     start = 0
     while start < len(text):
         end = min(start + size, len(text))
         if end < len(text):
-            for sep in ("\n\n", "\n", ". ", " "):
-                pos = text.rfind(sep, start + overlap, end)
-                if pos > start:
-                    end = pos + len(sep)
-                    break
+            # Melhoria 10: tentar quebrar ANTES de um título dentro da
+            # janela [start+overlap, end], priorizando títulos sobre
+            # separadores genéricos para manter seções coesas.
+            best_heading_break = -1
+            for hp in heading_positions:
+                if start + overlap < hp <= end:
+                    # Pegar o título mais próximo do fim do chunk
+                    if hp > best_heading_break:
+                        best_heading_break = hp
+
+            if best_heading_break > start:
+                end = best_heading_break
+            else:
+                # Fallback original: quebrar em separadores naturais
+                for sep in ("\n\n", "\n", ". ", " "):
+                    pos = text.rfind(sep, start + overlap, end)
+                    if pos > start:
+                        end = pos + len(sep)
+                        break
         raw_chunk = text[start:end]
         chunk = raw_chunk.strip()
         if chunk:
@@ -440,6 +577,32 @@ def _resolve_source_path(source_path: str, docs_path: Optional[str] = None) -> O
     except ValueError:
         return None
     return candidate
+
+
+def _infer_section_title(text: str, chunk_start: int) -> str:
+    """Tenta inferir o título da seção que contém o chunk.
+
+    Melhoria 10: olha para trás a partir de chunk_start buscando a linha
+    de título mais próxima (Markdown #, ALL-CAPS, **bold**).
+    Retorna string vazia se não encontrar.
+    """
+    # Buscar no trecho anterior ao chunk (até 500 chars atrás)
+    search_start = max(0, chunk_start - 500)
+    context = text[search_start:chunk_start]
+    # Procurar a ÚLTIMA linha de título antes do chunk
+    last_title = ""
+    for m in _HEADING_RE.finditer(context):
+        line_end = context.find("\n", m.start())
+        if line_end == -1:
+            line_end = len(context)
+        candidate = context[m.start():line_end].strip()
+        # Limpar marcadores Markdown
+        candidate = re.sub(r"^#+\s*", "", candidate)
+        candidate = re.sub(r"^\*\*|\*\*$", "", candidate)
+        candidate = re.sub(r"^\d+[\.\)]\s*", "", candidate)
+        if candidate:
+            last_title = candidate
+    return last_title
 
 
 def _query_collection(
@@ -578,23 +741,29 @@ def ingest_documents(docs_path: Optional[str] = None) -> int:
                     "Could not embed chunk %d of %s; skipping", i, file_path.name
                 )
                 continue
+
+            # Melhoria 10: inferir título da seção para metadado extra
+            section_title = _infer_section_title(content, start_offset)
+
             try:
+                meta: dict[str, Any] = {
+                    "source": file_path.name,
+                    "source_path": relative_source,
+                    "doc_id": file_id,
+                    "entry_type": "chunk",
+                    "chunk": i,
+                    "ordinal": i,
+                    "start_offset": start_offset,
+                    "end_offset": end_offset,
+                }
+                if section_title:
+                    meta["section_title"] = section_title
+
                 collection.upsert(
                     ids=[chunk_id],
                     embeddings=[embedding],
                     documents=[chunk],
-                    metadatas=[
-                        {
-                            "source": file_path.name,
-                            "source_path": relative_source,
-                            "doc_id": file_id,
-                            "entry_type": "chunk",
-                            "chunk": i,
-                            "ordinal": i,
-                            "start_offset": start_offset,
-                            "end_offset": end_offset,
-                        }
-                    ],
+                    metadatas=[meta],
                 )
                 ingested += 1
             except Exception as exc:
@@ -677,7 +846,7 @@ def search_documents_detailed(
             if isinstance(distance, (int, float)):
                 vector_score = 1.0 / (1.0 + max(float(distance), 0.0))
             lexical_score = _lexical_overlap_score(query, expanded_text or doc)
-            total_score = lexical_score * 3.0 + vector_score
+            total_score = lexical_score * 1.5 + vector_score
 
             merged_key = (source_path or source, expanded_start, expanded_end)
             result = merged.get(merged_key)
@@ -702,6 +871,27 @@ def search_documents_detailed(
                 result.evidence_chunks.append(doc)
 
         ranked = _rank_results(query, list(merged.values()))
+
+        # ---- Melhoria 2: filtro por threshold de relevância ----
+        # Descarta resultados com score composto abaixo do mínimo
+        # e/ou distância vetorial acima do máximo, evitando enviar
+        # contexto fraco ao modelo.
+        pre_filter_count = len(ranked)
+        if RAG_MIN_SCORE > 0:
+            ranked = [r for r in ranked if r.score >= RAG_MIN_SCORE]
+        if RAG_MAX_DISTANCE > 0:
+            ranked = [
+                r for r in ranked
+                if r.distance is None or r.distance <= RAG_MAX_DISTANCE
+            ]
+        filtered_out = pre_filter_count - len(ranked)
+        if filtered_out > 0:
+            logger.info(
+                "RAG threshold filter | removed=%d kept=%d min_score=%.2f max_dist=%s",
+                filtered_out, len(ranked), RAG_MIN_SCORE,
+                RAG_MAX_DISTANCE if RAG_MAX_DISTANCE > 0 else "off",
+            )
+
         return ranked[:k]
     except Exception as exc:
         logger.warning("RAG search failed: %s", exc)
@@ -731,3 +921,59 @@ def format_rag_context(chunks: list[str]) -> str:
         return ""
 
     return "Informações da empresa:\n" + "\n---\n".join(selected)
+
+
+# ---------------------------------------------------------------------------
+# Melhoria 1 — contexto estruturado com evidências rastreáveis.
+# Transforma list[RAGSearchResult] em bloco de texto que preserva fonte,
+# score e caminho para auditoria no prompt final.
+# ---------------------------------------------------------------------------
+
+
+def format_rag_evidence_context(
+    results: list[RAGSearchResult],
+    max_chars: int = 0,
+) -> str:
+    """Formata evidências RAG em bloco estruturado para o prompt do LLM.
+
+    Cada evidência inclui fonte, caminho, score e trecho — permitindo
+    rastreabilidade e grounding no prompt final.
+
+    Args:
+        results: lista de RAGSearchResult retornada por search_documents_detailed.
+        max_chars: limite de caracteres (0 = usar RAG_MAX_CONTEXT_CHARS).
+
+    Returns:
+        String formatada com blocos [EVIDÊNCIA N] ou string vazia se sem resultados.
+    """
+    if not results:
+        return ""
+
+    limit = max_chars or RAG_MAX_CONTEXT_CHARS
+    blocks: list[str] = []
+    total_chars = 0
+
+    for i, result in enumerate(results, 1):
+        block_lines = [
+            f"[EVIDÊNCIA {i}]",
+            f"fonte: {result.source}",
+        ]
+        if result.source_path and result.source_path != result.source:
+            block_lines.append(f"caminho: {result.source_path}")
+        block_lines.append(f"score: {result.score:.2f}")
+        if result.distance is not None:
+            block_lines.append(f"distância: {result.distance:.4f}")
+        block_lines.append("trecho:")
+        block_lines.append(result.text)
+
+        block = "\n".join(block_lines)
+
+        if total_chars + len(block) > limit and blocks:
+            break
+        blocks.append(block)
+        total_chars += len(block)
+
+    if not blocks:
+        return ""
+
+    return "\n\n".join(blocks)

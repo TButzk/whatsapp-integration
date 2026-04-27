@@ -38,6 +38,8 @@ volumes:
   postgres_data:
   redis_data:
   chatwoot_storage:
+  apptrip_postgres_data:
+  apptrip_uploads:
 
 # ---------------------------------------------------------------------------
 # Rede interna isolada para comunicação entre serviços
@@ -106,7 +108,7 @@ services:
   chatwoot:
     image: chatwoot/chatwoot:latest-ce
     restart: unless-stopped
-    command: bundle exec rails s -p 3000 -b 0.0.0.0
+    command: sh -lc "rm -f tmp/pids/server.pid && bundle exec rails s -p 3000 -b 0.0.0.0"
     env_file: .env
     environment:
       # Sobrescreve o RAILS_ENV para garantir produção
@@ -130,7 +132,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/auth/sign_in"]
+      test: ["CMD-SHELL", "ruby -rsocket -e 'TCPSocket.new(\"127.0.0.1\", 3000).close; exit 0' "]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -168,6 +170,95 @@ services:
         condition: service_healthy
 
   # -------------------------------------------------------------------------
+  # AppTrip PostgreSQL 16 — banco novo e isolado para o AppTrip
+  # -------------------------------------------------------------------------
+  apptrip-postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tripverse
+      POSTGRES_USER: tripverse
+      POSTGRES_PASSWORD: ${APPTRIP_POSTGRES_PASSWORD:-tripverse}
+    volumes:
+      - apptrip_postgres_data:/var/lib/postgresql/data
+    networks:
+      - chatwoot_net
+    deploy:
+      resources:
+        limits:
+          memory: 400M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tripverse -d tripverse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -------------------------------------------------------------------------
+  # AppTrip Backend — Spring Boot API interna (porta 5010)
+  # -------------------------------------------------------------------------
+  apptrip-backend:
+    build:
+      context: ../AppTrip/backend-java
+    restart: unless-stopped
+    environment:
+      SERVER_PORT: 5010
+      SERVER_FORWARD_HEADERS_STRATEGY: framework
+      SPRING_DATASOURCE_URL: jdbc:postgresql://apptrip-postgres:5432/tripverse
+      SPRING_DATASOURCE_USERNAME: tripverse
+      SPRING_DATASOURCE_PASSWORD: ${APPTRIP_POSTGRES_PASSWORD:-tripverse}
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      SPRING_JPA_SHOW_SQL: "false"
+      SPRING_JPA_FORMAT_SQL: "false"
+      SECURITY_SECRET_KEY: ${APPTRIP_SECURITY_SECRET_KEY:-bXkgc2VjdXJlIGtleSBmb3IgdHJpcHZlcnNlIGFwcGxpY2F0aW9uIDIwMjU=}
+      GEOCODE_API_KEY: ${APPTRIP_GEOCODE_API_KEY:-691f70d4b6f7b354059268umf0f8868}
+      APPTRIP_UPLOADS_PATH: /app/uploads
+    volumes:
+      - apptrip_uploads:/app/uploads
+    networks:
+      - chatwoot_net
+    deploy:
+      resources:
+        limits:
+          memory: 700M
+    depends_on:
+      apptrip-postgres:
+        condition: service_healthy
+
+  # -------------------------------------------------------------------------
+  # AppTrip React Web — build Vite servido por Nginx interno
+  # -------------------------------------------------------------------------
+  apptrip-react-web:
+    build:
+      context: ../AppTrip/frontend-web
+      args:
+        VITE_API_BASE_URL: /apptrip-api/api/v1
+        VITE_BASE_PATH: /apptrip-react/
+    restart: unless-stopped
+    networks:
+      - chatwoot_net
+    deploy:
+      resources:
+        limits:
+          memory: 50M
+
+  # -------------------------------------------------------------------------
+  # AppTrip Flutter Web — build Flutter servido por Nginx interno
+  # -------------------------------------------------------------------------
+  apptrip-flutter-web:
+    build:
+      context: ../AppTrip/frontend-flutter
+      args:
+        API_BASE_URL: /apptrip-api/api/v1
+        FLUTTER_BASE_HREF: /apptrip-flutter/
+    restart: unless-stopped
+    networks:
+      - chatwoot_net
+    deploy:
+      resources:
+        limits:
+          memory: 50M
+
+  # -------------------------------------------------------------------------
   # Nginx — proxy reverso
   # underscores_in_headers on; é obrigatório para a autenticação da API
   # do Chatwoot (cabeçalhos como api_access_token).
@@ -177,6 +268,8 @@ services:
     restart: unless-stopped
     ports:
       - "65271:80"
+      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       # Monte certificados TLS aqui quando disponíveis:
@@ -191,6 +284,9 @@ services:
           memory: 50M
     depends_on:
       - chatwoot
+      - apptrip-backend
+      - apptrip-react-web
+      - apptrip-flutter-web
 
   # -------------------------------------------------------------------------
   # Cloudflare Tunnel (cloudflared) — expõe o servidor local via Cloudflare
@@ -203,7 +299,7 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    command: tunnel --no-autoupdate --protocol http2 run --token ${CLOUDFLARE_TUNNEL_TOKEN}
     networks:
       - chatwoot_net
     deploy:

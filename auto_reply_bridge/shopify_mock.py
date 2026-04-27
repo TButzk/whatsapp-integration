@@ -17,6 +17,7 @@ SHOPIFY_MODE = os.getenv("SHOPIFY_MODE", "mock").lower()
 SHOPIFY_STORE_NAME = os.getenv("SHOPIFY_STORE_NAME", "Loja Demo")
 SHOPIFY_CURRENCY = os.getenv("SHOPIFY_CURRENCY", "BRL")
 SHOPIFY_MOCK_DELAY_MS = int(os.getenv("SHOPIFY_MOCK_DELAY_MS", "0"))
+SUPPORTS_ORDER_LOOKUP = True
 
 # ---------------------------------------------------------------------------
 # Mock data
@@ -208,3 +209,88 @@ def format_products_response(products: list[dict[str, Any]], query: str) -> str:
         lines.append(f"• {p['name']} — {p['price']} (indisponível)\n  {p['url']}")
 
     return "\n".join(lines)
+
+
+def search_policies(query: str) -> str:
+    """Mock stub — no real policy search in mock mode."""
+    return ""
+
+
+def list_available_resources() -> str:
+    """Return a short list of mock capabilities."""
+    return (
+        "Ferramentas mock disponiveis: search_products, get_order_status, "
+        "search_policies, get_cart, add_to_cart, update_cart_item, "
+        "remove_from_cart, get_cart_checkout_url"
+    )
+
+
+def get_cart(cart_id: str) -> dict[str, Any] | None:
+    """Return a minimal mock cart payload."""
+    if not cart_id:
+        return None
+    return {
+        "id": cart_id,
+        "lines": [],
+        "checkoutUrl": f"https://loja.example.com/cart/{cart_id}/checkout",
+    }
+
+
+def add_to_cart(cart_id: str, variant_id: str, quantity: int = 1) -> dict[str, Any] | None:
+    """Return a mock payload after add operation."""
+    if not cart_id or not variant_id:
+        return None
+    return {
+        "id": cart_id,
+        "lines": [{"variantId": variant_id, "quantity": max(quantity, 1)}],
+        "checkoutUrl": f"https://loja.example.com/cart/{cart_id}/checkout",
+    }
+
+
+def update_cart_item(
+    cart_id: str,
+    quantity: int,
+    *,
+    line_id: str = "",
+    variant_id: str = "",
+) -> dict[str, Any] | None:
+    """Return a mock payload after update operation."""
+    if not cart_id:
+        return None
+    return {
+        "id": cart_id,
+        "lines": [{"id": line_id, "variantId": variant_id, "quantity": max(quantity, 1)}],
+        "checkoutUrl": f"https://loja.example.com/cart/{cart_id}/checkout",
+    }
+
+
+def remove_from_cart(
+    cart_id: str,
+    *,
+    line_id: str = "",
+    variant_id: str = "",
+) -> dict[str, Any] | None:
+    """Return a mock payload after remove operation."""
+    if not cart_id:
+        return None
+    return {
+        "id": cart_id,
+        "lines": [],
+        "removed": {"line_id": line_id, "variant_id": variant_id},
+        "checkoutUrl": f"https://loja.example.com/cart/{cart_id}/checkout",
+    }
+
+
+def get_cart_checkout_url(cart_id: str) -> str:
+    """Return mock checkout URL."""
+    if not cart_id:
+        return ""
+    return f"https://loja.example.com/cart/{cart_id}/checkout"
+
+
+def format_cart_response(cart_payload: dict[str, Any] | None, action: str) -> str:
+    """Format mock cart response."""
+    if not cart_payload:
+        return f"Nao consegui {action} o carrinho no modo mock."
+    checkout = cart_payload.get("checkoutUrl") or ""
+    return f"Carrinho ({action}) atualizado. Checkout: {checkout}".strip()

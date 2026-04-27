@@ -819,7 +819,8 @@ class TestBuildPrompt:
     def _make_prompt(self, content: str, **kwargs) -> tuple[list[dict], dict]:
         import app as bridge_app
         payload = _make_payload(content=content, **kwargs)
-        return bridge_app.build_prompt(payload)
+        with patch("app._call_query_planner", return_value={}):
+            return bridge_app.build_prompt(payload)
 
     def test_returns_system_and_user(self):
         messages, _trace = self._make_prompt("Oi")
@@ -948,7 +949,8 @@ class TestGenerateReplyFallback:
         mock_resp.json.return_value = {"message": {"content": "Olá!"}}
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("app.requests.post", return_value=mock_resp):
+        with patch("app._call_query_planner", return_value={}), \
+             patch("app.requests.post", return_value=mock_resp):
             reply = bridge_app.generate_reply(self._payload())
         assert reply == "Olá!"
 
@@ -968,7 +970,8 @@ class TestGenerateReplyFallback:
             mock_resp.raise_for_status = MagicMock()
             return mock_resp
 
-        with patch("app.requests.post", side_effect=fake_post):
+        with patch("app._call_query_planner", return_value={}), \
+             patch("app.requests.post", side_effect=fake_post):
             reply = bridge_app.generate_reply(self._payload())
         assert reply == "Resposta do fallback"
         assert call_count == 2
@@ -976,7 +979,8 @@ class TestGenerateReplyFallback:
     def test_both_models_fail_returns_fail_soft_message(self):
         import app as bridge_app
 
-        with patch("app.requests.post", side_effect=Exception("down")):
+        with patch("app._call_query_planner", return_value={}), \
+             patch("app.requests.post", side_effect=Exception("down")):
             reply = bridge_app.generate_reply(self._payload())
         assert reply == bridge_app.OLLAMA_UNAVAILABLE_MESSAGE
 

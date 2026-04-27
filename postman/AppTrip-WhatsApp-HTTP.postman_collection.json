@@ -1,0 +1,746 @@
+{
+  "info": {
+    "name": "AppTrip + WhatsApp Integration - HTTP Services",
+    "_postman_id": "a5f9f997-0938-4f2d-bab7-c971df9cc4c7",
+    "description": "Collection com os endpoints HTTP expostos pelo gateway Nginx (local e Cloudflare), incluindo Chatwoot, AppTrip API, auto-reply bridge e frontends.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Gateway",
+      "item": [
+        {
+          "name": "Healthcheck Gateway",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/healthz"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Chatwoot",
+      "item": [
+        {
+          "name": "Chatwoot Home",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/"
+          }
+        },
+        {
+          "name": "Chatwoot Sign In",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/auth/sign_in"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auto Reply Bridge",
+      "item": [
+        {
+          "name": "Healthz",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/auto-reply/healthz"
+          }
+        },
+        {
+          "name": "Chat (teste direto)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"Oi, voces tem tenis branco?\",\n  \"conversation\": {\n    \"id\": 1001\n  },\n  \"contact\": {\n    \"id\": 2001\n  }\n}"
+            },
+            "url": "{{base_url}}/auto-reply/chat"
+          }
+        },
+        {
+          "name": "Webhook (simulado)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Chatwoot-Signature",
+                "value": "{{chatwoot_signature}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event\": \"message_created\",\n  \"id\": \"delivery-1\",\n  \"content\": \"Tenho duvida sobre frete\",\n  \"private\": false\n}"
+            },
+            "url": "{{base_url}}/auto-reply/webhook"
+          }
+        }
+      ]
+    },
+    {
+      "name": "AppTrip Web",
+      "item": [
+        {
+          "name": "React Web",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/apptrip-react/"
+          }
+        },
+        {
+          "name": "Flutter Web",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/apptrip-flutter/"
+          }
+        }
+      ]
+    },
+    {
+      "name": "AppTrip API Docs",
+      "item": [
+        {
+          "name": "OpenAPI JSON",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/apptrip-api/v3/api-docs"
+          }
+        },
+        {
+          "name": "Swagger UI",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/apptrip-api/swagger-ui/index.html"
+          }
+        }
+      ]
+    },
+    {
+      "name": "AppTrip API v1",
+      "item": [
+        {
+          "name": "Users",
+          "item": [
+            {
+              "name": "List Users",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  }
+                ],
+                "url": "{{base_url}}/apptrip-api/api/v1/users"
+              }
+            },
+            {
+              "name": "Get User By Id",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  }
+                ],
+                "url": "{{base_url}}/apptrip-api/api/v1/users/{{user_id}}"
+              }
+            },
+            {
+              "name": "Update Current User",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Novo Nome\",\n  \"email\": \"novo@email.com\"\n}"
+                },
+                "url": "{{base_url}}/apptrip-api/api/v1/users"
+              }
+            },
+            {
+              "name": "Delete Current User",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  }
+                ],
+                "url": "{{base_url}}/apptrip-api/api/v1/users"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Users Auth",
+          "item": [
+            {
+              "name": "Register",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Usuario Teste\",\n  \"email\": \"teste@apptrip.com\",\n  \"password\": \"123456\"\n}"
+                },
+                "url": "{{base_url}}/apptrip-api/api/v1/users-auth"
+              }
+            },
+            {
+              "name": "Login",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"teste@apptrip.com\",\n  \"password\": \"123456\"\n}"
+                },
+                "url": "{{base_url}}/apptrip-api/api/v1/users-auth/login"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Posts",
+          "item": [
+            {
+              "name": "Create Post",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"title\": \"Post teste\",\n  \"description\": \"Descricao\"\n}"
+                },
+                "url": "{{base_url}}/apptrip-api/api/v1/posts"
+              }
+            },
+            {
+              "name": "Get Post By Id",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{base_url}}/apptrip-api/api/v1/posts/{{post_id}}"
+              }
+            },
+            {
+              "name": "List Posts",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{base_url}}/apptrip-api/api/v1/posts"
+              }
+            },
+            {
+              "name": "Patch Post",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"title\": \"Post atualizado\"\n}"
+                },
+                "url": "{{base_url}}/apptrip-api/api/v1/posts/{{post_id}}"
+              }
+            },
+            {
+              "name": "Delete Post",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  }
+                ],
+                "url": "{{base_url}}/apptrip-api/api/v1/posts/{{post_id}}"
+              }
+            }
+          ]
+        },
+        {
+          "name": "User Posts",
+          "item": [
+            {
+              "name": "List User Posts",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{base_url}}/apptrip-api/api/v1/users/{{user_id}}/posts"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Media",
+          "item": [
+            {
+              "name": "Create Media",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"url\": \"https://example.com/image.jpg\",\n  \"type\": \"IMAGE\"\n}"
+                },
+                "url": "{{base_url}}/apptrip-api/api/v1/posts/{{post_id}}/media"
+              }
+            },
+            {
+              "name": "Get Media By Id",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{base_url}}/apptrip-api/api/v1/posts/{{post_id}}/media/{{media_id}}"
+              }
+            },
+            {
+              "name": "List Post Media",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{base_url}}/apptrip-api/api/v1/posts/{{post_id}}/media"
+              }
+            },
+            {
+              "name": "Delete Media",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  }
+                ],
+                "url": "{{base_url}}/apptrip-api/api/v1/posts/{{post_id}}/media/{{media_id}}"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Comments",
+          "item": [
+            {
+              "name": "Create Comment",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"content\": \"Comentario de teste\"\n}"
+                },
+                "url": "{{base_url}}/apptrip-api/api/v1/posts/{{post_id}}/comments"
+              }
+            },
+            {
+              "name": "Get Comment By Id",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{base_url}}/apptrip-api/api/v1/posts/{{post_id}}/comments/{{comment_id}}"
+              }
+            },
+            {
+              "name": "List Post Comments",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{base_url}}/apptrip-api/api/v1/posts/{{post_id}}/comments"
+              }
+            },
+            {
+              "name": "Patch Comment",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"content\": \"Comentario atualizado\"\n}"
+                },
+                "url": "{{base_url}}/apptrip-api/api/v1/posts/{{post_id}}/comments/{{comment_id}}"
+              }
+            },
+            {
+              "name": "Delete Comment",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  }
+                ],
+                "url": "{{base_url}}/apptrip-api/api/v1/posts/{{post_id}}/comments/{{comment_id}}"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Places",
+          "item": [
+            {
+              "name": "Get Place By Id",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{base_url}}/apptrip-api/api/v1/places/{{place_id}}"
+              }
+            },
+            {
+              "name": "List Places",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{base_url}}/apptrip-api/api/v1/places"
+              }
+            },
+            {
+              "name": "List Places By Route",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{base_url}}/apptrip-api/api/v1/places/by-route/{{route_id}}"
+              }
+            },
+            {
+              "name": "Create Place",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Parque\",\n  \"type\": \"TOURISM\"\n}"
+                },
+                "url": "{{base_url}}/apptrip-api/api/v1/places"
+              }
+            },
+            {
+              "name": "Patch Place",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Parque atualizado\"\n}"
+                },
+                "url": "{{base_url}}/apptrip-api/api/v1/places/{{place_id}}"
+              }
+            },
+            {
+              "name": "Delete Place",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  }
+                ],
+                "url": "{{base_url}}/apptrip-api/api/v1/places/{{place_id}}"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Routes",
+          "item": [
+            {
+              "name": "Get Route By Id",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{base_url}}/apptrip-api/api/v1/routes/{{route_id}}"
+              }
+            },
+            {
+              "name": "List Routes",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{base_url}}/apptrip-api/api/v1/routes"
+              }
+            },
+            {
+              "name": "My Routes",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  }
+                ],
+                "url": "{{base_url}}/apptrip-api/api/v1/routes/mine"
+              }
+            },
+            {
+              "name": "Published Routes",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{base_url}}/apptrip-api/api/v1/routes/published"
+              }
+            },
+            {
+              "name": "Create Route",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"title\": \"Rota Centro\",\n  \"description\": \"Passeio urbano\"\n}"
+                },
+                "url": "{{base_url}}/apptrip-api/api/v1/routes"
+              }
+            },
+            {
+              "name": "Delete Route",
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  }
+                ],
+                "url": "{{base_url}}/apptrip-api/api/v1/routes/{{route_id}}"
+              }
+            },
+            {
+              "name": "Publish Route",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  }
+                ],
+                "url": "{{base_url}}/apptrip-api/api/v1/routes/{{route_id}}/publish"
+              }
+            },
+            {
+              "name": "Finalize Route",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{jwt_token}}"
+                  }
+                ],
+                "url": "{{base_url}}/apptrip-api/api/v1/routes/{{route_id}}/finalize"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Route Places",
+          "item": [
+            {
+              "name": "List Route Places",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{base_url}}/apptrip-api/api/v1/routes/{{route_id}}/places"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Uploads",
+          "item": [
+            {
+              "name": "Get Uploaded File",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{base_url}}/apptrip-api/api/v1/uploads/{{filename}}"
+              }
+            },
+            {
+              "name": "Upload File",
+              "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    {
+                      "key": "file",
+                      "type": "file",
+                      "src": ""
+                    }
+                  ]
+                },
+                "url": "{{base_url}}/apptrip-api/api/v1/uploads"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url_local",
+      "value": "http://localhost:65271"
+    },
+    {
+      "key": "base_url_public",
+      "value": "https://app.tiarlesbutzk.com.br"
+    },
+    {
+      "key": "base_url",
+      "value": "{{base_url_local}}"
+    },
+    {
+      "key": "jwt_token",
+      "value": ""
+    },
+    {
+      "key": "chatwoot_signature",
+      "value": ""
+    },
+    {
+      "key": "user_id",
+      "value": "1"
+    },
+    {
+      "key": "post_id",
+      "value": "1"
+    },
+    {
+      "key": "media_id",
+      "value": "1"
+    },
+    {
+      "key": "comment_id",
+      "value": "1"
+    },
+    {
+      "key": "route_id",
+      "value": "1"
+    },
+    {
+      "key": "place_id",
+      "value": "1"
+    },
+    {
+      "key": "filename",
+      "value": "arquivo.jpg"
+    }
+  ]
+}

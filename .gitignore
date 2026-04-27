@@ -7,3 +7,5 @@ certs/
 # Logs locais
 *.log
 /auto_reply_bridge/docs
+/auto_reply_bridge/Docs Backup
+/auto_reply_bridge/docs
