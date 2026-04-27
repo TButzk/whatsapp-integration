@@ -59,6 +59,8 @@ services:
   postgres:
     image: pgvector/pgvector:pg14
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_DB: chatwoot_production
       POSTGRES_USER: chatwoot
@@ -175,10 +177,12 @@ services:
   apptrip-postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:5433:5432"
     environment:
-      POSTGRES_DB: tripverse
-      POSTGRES_USER: tripverse
-      POSTGRES_PASSWORD: ${APPTRIP_POSTGRES_PASSWORD:-tripverse}
+      POSTGRES_DB: apptrip
+      POSTGRES_USER: apptrip
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - apptrip_postgres_data:/var/lib/postgresql/data
     networks:
@@ -188,7 +192,7 @@ services:
         limits:
           memory: 400M
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tripverse -d tripverse"]
+      test: ["CMD-SHELL", "pg_isready -U apptrip -d apptrip"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -203,9 +207,9 @@ services:
     environment:
       SERVER_PORT: 5010
       SERVER_FORWARD_HEADERS_STRATEGY: framework
-      SPRING_DATASOURCE_URL: jdbc:postgresql://apptrip-postgres:5432/tripverse
-      SPRING_DATASOURCE_USERNAME: tripverse
-      SPRING_DATASOURCE_PASSWORD: ${APPTRIP_POSTGRES_PASSWORD:-tripverse}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://apptrip-postgres:5432/apptrip
+      SPRING_DATASOURCE_USERNAME: apptrip
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
       SPRING_JPA_HIBERNATE_DDL_AUTO: update
       SPRING_JPA_SHOW_SQL: "false"
       SPRING_JPA_FORMAT_SQL: "false"
@@ -268,8 +272,6 @@ services:
     restart: unless-stopped
     ports:
       - "65271:80"
-      - "127.0.0.1:5432:5432"
-      - "127.0.0.1:5433:5432"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       # Monte certificados TLS aqui quando disponíveis:
