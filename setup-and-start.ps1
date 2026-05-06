@@ -25,19 +25,29 @@ function Assert-Command([string]$CommandName, [string]$InstallHint) {
 }
 
 function Wait-ContainerReady(
-    [string]$ContainerName,
+    [string]$ServiceName,
     [int]$TimeoutSeconds = 240
 ) {
     $start = Get-Date
 
     while (((Get-Date) - $start).TotalSeconds -lt $TimeoutSeconds) {
-        $state = (docker inspect --format "{{.State.Status}}" $ContainerName 2>$null)
+            $containerId = (docker compose ps -q $ServiceName 2>$null)
+            if ($containerId) {
+                $containerId = $containerId.Trim()
+            }
+
+            if (-not $containerId) {
+                Start-Sleep -Seconds 2
+                continue
+            }
+
+            $state = (docker inspect --format "{{.State.Status}}" $containerId 2>$null)
         if (-not $state) {
             Start-Sleep -Seconds 2
             continue
         }
 
-        $healthRaw = (docker inspect --format "{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}" $ContainerName 2>$null)
+            $healthRaw = (docker inspect --format "{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}" $containerId 2>$null)
 
         if ($state -ne "running") {
             Start-Sleep -Seconds 2
@@ -45,18 +55,18 @@ function Wait-ContainerReady(
         }
 
         if ($healthRaw -eq "healthy" -or $healthRaw -eq "no-healthcheck") {
-            Write-Info "$ContainerName pronto (state=$state, health=$healthRaw)."
+             Write-Info "$ServiceName pronto (state=$state, health=$healthRaw)."
             return
         }
 
         if ($healthRaw -eq "unhealthy") {
-            throw "$ContainerName ficou unhealthy. Verifique logs com: docker compose logs --tail 120"
+            throw "$ServiceName ficou unhealthy. Verifique logs com: docker compose logs --tail 120"
         }
 
         Start-Sleep -Seconds 3
     }
 
-    throw "Timeout aguardando $ContainerName ficar pronto."
+    throw "Timeout aguardando $ServiceName ficar pronto."
 }
 
 function Get-ChatwootWithRetry([int]$Attempts = 3) {
@@ -102,25 +112,25 @@ if (-not $SkipPull) {
     Get-ChatwootWithRetry
 
     Write-Info "Baixando imagens restantes do compose..."
-    docker compose pull postgres redis nginx cloudflared | Out-Host
+    docker compose pull whatsapp-postgres whatsapp-redis whatsapp-nginx-gateway whatsapp-cloudflared | Out-Host
 }
 
 Write-Info "Subindo dependencias de banco/cache..."
-docker compose up -d postgres redis apptrip-postgres | Out-Host
+docker compose up -d whatsapp-postgres whatsapp-redis | Out-Host
 
 Write-Info "Executando preparacao do banco do Chatwoot (db:chatwoot_prepare)..."
-docker compose run --rm -e RAILS_ENV=production chatwoot bundle exec rails db:chatwoot_prepare | Out-Host
+docker compose run --rm -e RAILS_ENV=production whatsapp-chatwoot-web bundle exec rails db:chatwoot_prepare | Out-Host
 
 Write-Info "Subindo todos os servicos com build quando necessario..."
 docker compose up -d --build | Out-Host
 
 Write-Info "Reiniciando Chatwoot e Sidekiq para garantir schema atualizado..."
-docker compose restart chatwoot sidekiq | Out-Host
+docker compose restart whatsapp-chatwoot-web whatsapp-chatwoot-worker | Out-Host
 
 Write-Info "Aguardando servicos principais ficarem prontos..."
-Wait-ContainerReady -ContainerName "whatsapp-integration-postgres-1" -TimeoutSeconds 180
-Wait-ContainerReady -ContainerName "whatsapp-integration-redis-1" -TimeoutSeconds 180
-Wait-ContainerReady -ContainerName "whatsapp-integration-chatwoot-1" -TimeoutSeconds 300
+Wait-ContainerReady -ServiceName "whatsapp-postgres" -TimeoutSeconds 180
+Wait-ContainerReady -ServiceName "whatsapp-redis" -TimeoutSeconds 180
+Wait-ContainerReady -ServiceName "whatsapp-chatwoot-web" -TimeoutSeconds 300
 
 if ($StartBridge) {
     $bridgeDir = Join-Path $scriptRoot "auto_reply_bridge"

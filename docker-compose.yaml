@@ -30,6 +30,8 @@
 # deve ser testada para garantir que a soma não exceda o disponível no Docker Desktop.
 # =============================================================================
 
+name: whatsapp-integration
+
 
 # ---------------------------------------------------------------------------
 # Volumes nomeados — dados persistentes fora dos contêineres
@@ -38,14 +40,12 @@ volumes:
   postgres_data:
   redis_data:
   chatwoot_storage:
-  apptrip_postgres_data:
-  apptrip_uploads:
 
 # ---------------------------------------------------------------------------
 # Rede interna isolada para comunicação entre serviços
 # ---------------------------------------------------------------------------
 networks:
-  chatwoot_net:
+  whatsapp_net:
     driver: bridge
 
 # ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@ services:
   # -------------------------------------------------------------------------
   # PostgreSQL 14 — banco de dados relacional
   # -------------------------------------------------------------------------
-  postgres:
+  whatsapp-postgres:
     image: pgvector/pgvector:pg14
     restart: unless-stopped
     ports:
@@ -68,7 +68,9 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
-      - chatwoot_net
+      whatsapp_net:
+        aliases:
+          - postgres
     deploy:
       resources:
         limits:
@@ -82,7 +84,7 @@ services:
   # -------------------------------------------------------------------------
   # Redis 7 — cache e fila de jobs (Sidekiq)
   # -------------------------------------------------------------------------
-  redis:
+  whatsapp-redis:
     image: redis:7-alpine
     restart: unless-stopped
     command: >
@@ -93,7 +95,9 @@ services:
     volumes:
       - redis_data:/data
     networks:
-      - chatwoot_net
+      whatsapp_net:
+        aliases:
+          - redis
     deploy:
       resources:
         limits:
@@ -107,7 +111,7 @@ services:
   # -------------------------------------------------------------------------
   # Chatwoot Web — interface Rails + Puma (porta interna 3000)
   # -------------------------------------------------------------------------
-  chatwoot:
+  whatsapp-chatwoot-web:
     image: chatwoot/chatwoot:latest-ce
     restart: unless-stopped
     command: sh -lc "rm -f tmp/pids/server.pid && bundle exec rails s -p 3000 -b 0.0.0.0"
@@ -123,15 +127,15 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
-      - chatwoot_net
+      - whatsapp_net
     deploy:
       resources:
         limits:
           memory: 600M
     depends_on:
-      postgres:
+      whatsapp-postgres:
         condition: service_healthy
-      redis:
+      whatsapp-redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "ruby -rsocket -e 'TCPSocket.new(\"127.0.0.1\", 3000).close; exit 0' "]
@@ -145,7 +149,7 @@ services:
   # ATENÇÃO: Sidekiq apresenta vazamento gradual de memória sob carga intensa.
   # Configure Swap no host e monitore o uso de RAM periodicamente.
   # -------------------------------------------------------------------------
-  sidekiq:
+  whatsapp-chatwoot-worker:
     image: chatwoot/chatwoot:latest-ce
     restart: unless-stopped
     command: bundle exec sidekiq -C config/sidekiq.yml
@@ -160,114 +164,23 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
-      - chatwoot_net
+      - whatsapp_net
     deploy:
       resources:
         limits:
           memory: 400M
     depends_on:
-      postgres:
+      whatsapp-postgres:
         condition: service_healthy
-      redis:
+      whatsapp-redis:
         condition: service_healthy
-
-  # -------------------------------------------------------------------------
-  # AppTrip PostgreSQL 16 — banco novo e isolado para o AppTrip
-  # -------------------------------------------------------------------------
-  apptrip-postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:5433:5432"
-    environment:
-      POSTGRES_DB: apptrip
-      POSTGRES_USER: apptrip
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - apptrip_postgres_data:/var/lib/postgresql/data
-    networks:
-      - chatwoot_net
-    deploy:
-      resources:
-        limits:
-          memory: 400M
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U apptrip -d apptrip"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # -------------------------------------------------------------------------
-  # AppTrip Backend — Spring Boot API interna (porta 5010)
-  # -------------------------------------------------------------------------
-  apptrip-backend:
-    build:
-      context: ../AppTrip/backend-java
-    restart: unless-stopped
-    environment:
-      SERVER_PORT: 5010
-      SERVER_FORWARD_HEADERS_STRATEGY: framework
-      SPRING_DATASOURCE_URL: jdbc:postgresql://apptrip-postgres:5432/apptrip
-      SPRING_DATASOURCE_USERNAME: apptrip
-      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
-      SPRING_JPA_HIBERNATE_DDL_AUTO: update
-      SPRING_JPA_SHOW_SQL: "false"
-      SPRING_JPA_FORMAT_SQL: "false"
-      SECURITY_SECRET_KEY: ${APPTRIP_SECURITY_SECRET_KEY:-bXkgc2VjdXJlIGtleSBmb3IgdHJpcHZlcnNlIGFwcGxpY2F0aW9uIDIwMjU=}
-      GEOCODE_API_KEY: ${APPTRIP_GEOCODE_API_KEY:-691f70d4b6f7b354059268umf0f8868}
-      APPTRIP_UPLOADS_PATH: /app/uploads
-    volumes:
-      - apptrip_uploads:/app/uploads
-    networks:
-      - chatwoot_net
-    deploy:
-      resources:
-        limits:
-          memory: 700M
-    depends_on:
-      apptrip-postgres:
-        condition: service_healthy
-
-  # -------------------------------------------------------------------------
-  # AppTrip React Web — build Vite servido por Nginx interno
-  # -------------------------------------------------------------------------
-  apptrip-react-web:
-    build:
-      context: ../AppTrip/frontend-web
-      args:
-        VITE_API_BASE_URL: /apptrip-api/api/v1
-        VITE_BASE_PATH: /apptrip-react/
-    restart: unless-stopped
-    networks:
-      - chatwoot_net
-    deploy:
-      resources:
-        limits:
-          memory: 50M
-
-  # -------------------------------------------------------------------------
-  # AppTrip Flutter Web — build Flutter servido por Nginx interno
-  # -------------------------------------------------------------------------
-  apptrip-flutter-web:
-    build:
-      context: ../AppTrip/frontend-flutter
-      args:
-        API_BASE_URL: /apptrip-api/api/v1
-        FLUTTER_BASE_HREF: /apptrip-flutter/
-    restart: unless-stopped
-    networks:
-      - chatwoot_net
-    deploy:
-      resources:
-        limits:
-          memory: 50M
 
   # -------------------------------------------------------------------------
   # Nginx — proxy reverso
   # underscores_in_headers on; é obrigatório para a autenticação da API
   # do Chatwoot (cabeçalhos como api_access_token).
   # -------------------------------------------------------------------------
-  nginx:
+  whatsapp-nginx-gateway:
     image: nginx:1.25-alpine
     restart: unless-stopped
     ports:
@@ -279,16 +192,15 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
-      - chatwoot_net
+      whatsapp_net:
+        aliases:
+          - nginx
     deploy:
       resources:
         limits:
           memory: 50M
     depends_on:
-      - chatwoot
-      - apptrip-backend
-      - apptrip-react-web
-      - apptrip-flutter-web
+      - whatsapp-chatwoot-web
 
   # -------------------------------------------------------------------------
   # Cloudflare Tunnel (cloudflared) — expõe o servidor local via Cloudflare
@@ -298,15 +210,15 @@ services:
   # Pré-requisito: crie o túnel no painel da Cloudflare e obtenha o token.
   #   https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
   # -------------------------------------------------------------------------
-  cloudflared:
+  whatsapp-cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
     command: tunnel --no-autoupdate --protocol http2 run --token ${CLOUDFLARE_TUNNEL_TOKEN}
     networks:
-      - chatwoot_net
+      - whatsapp_net
     deploy:
       resources:
         limits:
           memory: 50M
     depends_on:
-      - nginx
+      - whatsapp-nginx-gateway

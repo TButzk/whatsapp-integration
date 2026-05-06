@@ -10,6 +10,11 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\setup-and-start.ps1
 ```
 
+## Escopo desta stack
+
+Esta stack agora contem apenas os servicos de WhatsApp/Chatwoot.
+Os servicos do AppTrip foram separados para `../AppTrip/docker-compose.yaml`.
+
 Opcoes uteis:
 
 ```powershell
@@ -18,6 +23,25 @@ Opcoes uteis:
 
 # Inicia tambem o auto_reply_bridge em nova janela
 .\setup-and-start.ps1 -StartBridge
+```
+
+## Recuperacao rapida (self-heal)
+
+Quando o dominio publico ou o gateway local nao abrirem, execute:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\self-heal.ps1
+```
+
+Opcoes:
+
+```powershell
+# Ignora validacao publica
+.\self-heal.ps1 -SkipPublicCheck
+
+# Ajusta timeout total (segundos)
+.\self-heal.ps1 -TimeoutSeconds 300
 ```
 
 ## Resposta automática com Gemma3

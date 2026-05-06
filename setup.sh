@@ -97,7 +97,7 @@ docker compose pull
 info "Inicializando/migrando o banco de dados..."
 docker compose run --rm \
     -e RAILS_ENV=production \
-    chatwoot \
+    whatsapp-chatwoot-web \
     bundle exec rails db:chatwoot_prepare
 
 info "Banco de dados pronto."
@@ -119,7 +119,7 @@ info " Acesse:        a URL definida em FRONTEND_URL no seu arquivo .env"
 info " Logs:          docker compose logs -f"
 info " Status:        docker compose ps"
 info " Parar tudo:    docker compose down"
-info " Backup DB:     docker compose exec postgres pg_dump -U chatwoot chatwoot_production > backup.sql"
+info " Backup DB:     docker compose exec whatsapp-postgres pg_dump -U chatwoot chatwoot_production > backup.sql"
 info ""
 warn " Lembre-se de configurar o Cloudflare Tunnel e apontar o"
 warn " webhook da WhatsApp Cloud API para:"
