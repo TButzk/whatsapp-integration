@@ -502,11 +502,36 @@ def is_duplicate(delivery_id: str) -> bool:
         return False
 
 
+def _normalize_webhook_message_type(msg_type: Any) -> str | None:
+    """Normalize Chatwoot webhook message_type values.
+
+    Chatwoot may send message_type as strings ("incoming"/"outgoing")
+    or integers (0 incoming, 1 outgoing).
+    """
+    if isinstance(msg_type, str):
+        normalized = msg_type.strip().lower()
+        if normalized in {"incoming", "outgoing"}:
+            return normalized
+
+    if isinstance(msg_type, bool):
+        # bool is subclass of int; avoid treating True/False as message types
+        return None
+
+    if isinstance(msg_type, int):
+        if msg_type == 0:
+            return "incoming"
+        if msg_type == 1:
+            return "outgoing"
+
+    return None
+
+
 def should_reply(payload: dict[str, Any]) -> tuple[bool, str]:
     if payload.get("event") != "message_created":
         return False, "unsupported_event"
 
-    if payload.get("message_type") != "incoming":
+    message_type = _normalize_webhook_message_type(payload.get("message_type"))
+    if message_type != "incoming":
         return False, "not_incoming"
 
     if payload.get("private"):

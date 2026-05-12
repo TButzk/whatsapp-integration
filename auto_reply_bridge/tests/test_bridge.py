@@ -727,8 +727,9 @@ class TestAppEndpoints:
     """Tests for Flask endpoints (healthz and webhook)."""
 
     @pytest.fixture
-    def client(self):
+    def client(self, monkeypatch):
         import app as bridge_app
+        monkeypatch.setattr(bridge_app, "CHATWOOT_WEBHOOK_SECRET", "")
         bridge_app.app.config["TESTING"] = True
         with bridge_app.app.test_client() as c:
             yield c
@@ -751,6 +752,17 @@ class TestAppEndpoints:
         resp = client.post("/webhook", json=payload)
         data = json.loads(resp.data)
         assert data["status"] == "ignored"
+
+    def test_webhook_accepts_numeric_incoming_message_type(self, client):
+        payload = _make_payload(msg_type=0)
+        resp = client.post(
+            "/webhook",
+            json=payload,
+            headers={"X-Chatwoot-Delivery": "numeric-incoming-1"},
+        )
+        assert resp.status_code == 202
+        data = json.loads(resp.data)
+        assert data["status"] == "accepted"
 
     def test_webhook_ignored_agent(self, client):
         payload = _make_payload(sender_type="user")
