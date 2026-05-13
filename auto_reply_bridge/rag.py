@@ -109,6 +109,7 @@ _CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "600"))
 _CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "150"))
 RAG_RECALL_K = int(os.getenv("RAG_RECALL_K", "12"))
 RAG_EXPANDED_CONTEXT_CHARS = int(os.getenv("RAG_EXPANDED_CONTEXT_CHARS", "2200"))
+RAG_USE_FULL_DOCUMENT_CONTEXT = os.getenv("RAG_USE_FULL_DOCUMENT_CONTEXT", "true").lower() == "true"
 RAG_RERANK_MODEL = os.getenv("RAG_RERANK_MODEL", "").strip()
 RAG_RERANK_TIMEOUT = int(os.getenv("RAG_RERANK_TIMEOUT", "60"))
 RAG_RERANK_CANDIDATES = int(os.getenv("RAG_RERANK_CANDIDATES", "6"))
@@ -134,7 +135,7 @@ RAG_MIN_SCORE = _read_float_env("RAG_MIN_SCORE", 0.4)
 RAG_MAX_DISTANCE = _read_float_env("RAG_MAX_DISTANCE", 0.0)  # 0.0 = desabilitado
 
 logger.info(
-    "RAG Ollama settings | base_url=%s keep_alive=%s timeout=%ss tags_timeout=%ss num_gpu=%s min_score=%s max_distance=%s",
+    "RAG Ollama settings | base_url=%s keep_alive=%s timeout=%ss tags_timeout=%ss num_gpu=%s min_score=%s max_distance=%s full_doc_context=%s",
     RAG_OLLAMA_BASE_URL,
     RAG_OLLAMA_KEEP_ALIVE,
     RAG_OLLAMA_REQUEST_TIMEOUT,
@@ -142,6 +143,7 @@ logger.info(
     RAG_OLLAMA_NUM_GPU if RAG_OLLAMA_NUM_GPU is not None else "default",
     RAG_MIN_SCORE,
     RAG_MAX_DISTANCE if RAG_MAX_DISTANCE > 0 else "off",
+    RAG_USE_FULL_DOCUMENT_CONTEXT,
 )
 
 # Module-level singletons so Chroma is initialised once per process.
@@ -778,7 +780,11 @@ def search_documents_detailed(
     top_k: Optional[int] = None,
     docs_path: Optional[str] = None,
 ) -> list[RAGSearchResult]:
-    """Return structured retrieval results after recall, expansion and reranking."""
+    """Return structured retrieval results after recall and reranking.
+
+    By default, chunk recall is used only to identify relevant source files, and
+    full document contents are returned as evidence for the LLM context.
+    """
     if not RAG_ENABLED:
         return []
 
@@ -811,7 +817,7 @@ def search_documents_detailed(
             return []
 
         source_cache: dict[str, str] = {}
-        merged: dict[tuple[str, int, int], RAGSearchResult] = {}
+        merged: dict[str, RAGSearchResult] = {}
 
         for index, (doc, meta) in enumerate(zip(docs, metas)):
             if not isinstance(doc, str) or not doc:
@@ -835,11 +841,16 @@ def search_documents_detailed(
                     source_cache[cache_key] = loaded or ""
                 full_text = source_cache.get(cache_key, "")
                 if full_text:
-                    expanded_text, expanded_start, expanded_end = _expand_span(
-                        full_text,
-                        int(start_offset) if isinstance(start_offset, int) else 0,
-                        int(end_offset) if isinstance(end_offset, int) else len(doc),
-                    )
+                    if RAG_USE_FULL_DOCUMENT_CONTEXT:
+                        expanded_text = full_text.strip()
+                        expanded_start = 0
+                        expanded_end = len(full_text)
+                    else:
+                        expanded_text, expanded_start, expanded_end = _expand_span(
+                            full_text,
+                            int(start_offset) if isinstance(start_offset, int) else 0,
+                            int(end_offset) if isinstance(end_offset, int) else len(doc),
+                        )
 
             distance = distances[index] if index < len(distances) else None
             vector_score = 0.0
@@ -848,7 +859,7 @@ def search_documents_detailed(
             lexical_score = _lexical_overlap_score(query, expanded_text or doc)
             total_score = lexical_score * 1.5 + vector_score
 
-            merged_key = (source_path or source, expanded_start, expanded_end)
+            merged_key = source_path or source or doc_id or f"doc_{index}"
             result = merged.get(merged_key)
             if result is None:
                 candidate_id = f"C{len(merged) + 1}"

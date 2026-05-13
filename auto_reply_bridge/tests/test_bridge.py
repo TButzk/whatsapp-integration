@@ -824,6 +824,42 @@ class TestAppEndpoints:
         )
         assert resp.status_code == 202
 
+    def test_prompt_config_api_update_default(self, client):
+        resp = client.post(
+            "/api/prompt-config/default",
+            json={"prompt": "Prompt padrão de teste"},
+        )
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert data["status"] == "ok"
+
+        cfg = client.get("/api/prompt-config")
+        cfg_data = json.loads(cfg.data)
+        assert cfg_data["default_prompt"] == "Prompt padrão de teste"
+
+    def test_prompt_config_api_update_and_delete_conversation(self, client):
+        resp = client.post(
+            "/api/prompt-config/conversation/42",
+            json={"prompt": "Regra especial conversa 42"},
+        )
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert data["status"] == "ok"
+        assert data["conversation_id"] == "42"
+
+        cfg = client.get("/api/prompt-config")
+        cfg_data = json.loads(cfg.data)
+        assert cfg_data["conversation_prompts"]["42"] == "Regra especial conversa 42"
+
+        delete_resp = client.delete("/api/prompt-config/conversation/42")
+        assert delete_resp.status_code == 200
+        delete_data = json.loads(delete_resp.data)
+        assert delete_data["status"] == "ok"
+
+        cfg_after = client.get("/api/prompt-config")
+        cfg_after_data = json.loads(cfg_after.data)
+        assert "42" not in cfg_after_data["conversation_prompts"]
+
 
 class TestBuildPrompt:
     """Tests for the build_prompt orchestration logic."""
@@ -910,6 +946,30 @@ class TestBuildPrompt:
 
         assert len(messages) == 2
 
+    def test_build_prompt_uses_conversation_prompt_override(self):
+        import app as bridge_app
+
+        with bridge_app.prompt_config_lock:
+            snapshot = {
+                "default_prompt": bridge_app._prompt_config.get("default_prompt", ""),
+                "conversation_prompts": dict(bridge_app._prompt_config.get("conversation_prompts", {})),
+            }
+
+        try:
+            with patch("app._save_prompt_config_unlocked", return_value=None):
+                bridge_app._set_default_prompt("PROMPT_PADRAO_TESTE")
+                bridge_app._set_conversation_prompt(42, "PROMPT_CONVERSA_42")
+
+            with patch("app._call_query_planner", return_value={}):
+                messages, trace = bridge_app.build_prompt(_make_payload(content="Oi", conversation_id=42))
+
+            assert messages[0]["content"] == "PROMPT_CONVERSA_42"
+            assert trace["system_prompt_source"] == "conversation:42"
+        finally:
+            with bridge_app.prompt_config_lock:
+                bridge_app._prompt_config["default_prompt"] = snapshot["default_prompt"]
+                bridge_app._prompt_config["conversation_prompts"] = snapshot["conversation_prompts"]
+
     def test_rag_failure_does_not_crash(self, monkeypatch):
         """If RAG raises, prompt is still built without RAG context."""
         import app as bridge_app
@@ -995,5 +1055,46 @@ class TestGenerateReplyFallback:
              patch("app.requests.post", side_effect=Exception("down")):
             reply = bridge_app.generate_reply(self._payload())
         assert reply == bridge_app.OLLAMA_UNAVAILABLE_MESSAGE
+
+
+class TestWorkerAutoReopen:
+    """Tests for auto-reopen behaviour before sending reply."""
+
+    def test_worker_reopens_then_sends(self):
+        import app as bridge_app
+
+        payload = _make_payload(conversation_id=321)
+        fake_queue = MagicMock()
+        fake_queue.get.side_effect = [payload, KeyboardInterrupt()]
+
+        with patch("app.AUTO_REOPEN_CONVERSATION", True), \
+             patch.object(bridge_app, "job_queue", fake_queue), \
+             patch("app.generate_reply", return_value="ok"), \
+             patch("app.reopen_chatwoot_conversation") as mock_reopen, \
+             patch("app.send_chatwoot_message") as mock_send:
+            with pytest.raises(KeyboardInterrupt):
+                bridge_app.worker()
+
+        mock_reopen.assert_called_once_with(payload)
+        mock_send.assert_called_once_with(payload, "ok")
+        assert fake_queue.task_done.call_count == 1
+
+    def test_worker_still_sends_if_reopen_fails(self):
+        import app as bridge_app
+
+        payload = _make_payload(conversation_id=322)
+        fake_queue = MagicMock()
+        fake_queue.get.side_effect = [payload, KeyboardInterrupt()]
+
+        with patch("app.AUTO_REOPEN_CONVERSATION", True), \
+             patch.object(bridge_app, "job_queue", fake_queue), \
+             patch("app.generate_reply", return_value="ok"), \
+             patch("app.reopen_chatwoot_conversation", side_effect=Exception("boom")), \
+             patch("app.send_chatwoot_message") as mock_send:
+            with pytest.raises(KeyboardInterrupt):
+                bridge_app.worker()
+
+        mock_send.assert_called_once_with(payload, "ok")
+        assert fake_queue.task_done.call_count == 1
 
 

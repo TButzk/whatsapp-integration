@@ -1,11 +1,14 @@
 import hashlib
 import hmac
+import json
 import logging
 import os
 import queue
 import re
 import threading
 import time
+import uuid
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +74,113 @@ app = Flask(__name__)
 job_queue: "queue.Queue[dict[str, Any]]" = queue.Queue()
 processed_deliveries: dict[str, float] = {}
 processed_lock = threading.Lock()
+prompt_config_lock = threading.Lock()
+
+
+def _default_prompt_config() -> dict[str, Any]:
+    default_prompt = os.getenv(
+        "OLLAMA_SYSTEM_PROMPT",
+        "Voce e um atendente virtual objetivo e educado. Responda em portugues do Brasil.",
+    )
+    return {
+        "default_prompt": default_prompt,
+        "conversation_prompts": {},
+    }
+
+
+def _load_prompt_config() -> dict[str, Any]:
+    default_config = _default_prompt_config()
+    try:
+        if not PROMPT_CONFIG_PATH.exists():
+            return default_config
+
+        raw = json.loads(PROMPT_CONFIG_PATH.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return default_config
+
+        default_prompt = raw.get("default_prompt")
+        if not isinstance(default_prompt, str) or not default_prompt.strip():
+            default_prompt = default_config["default_prompt"]
+
+        raw_overrides = raw.get("conversation_prompts")
+        conversation_prompts: dict[str, str] = {}
+        if isinstance(raw_overrides, dict):
+            for key, value in raw_overrides.items():
+                if not isinstance(value, str) or not value.strip():
+                    continue
+                conv_key = str(key).strip()
+                if conv_key:
+                    conversation_prompts[conv_key] = value.strip()
+
+        return {
+            "default_prompt": default_prompt.strip(),
+            "conversation_prompts": conversation_prompts,
+        }
+    except Exception as exc:
+        logger.warning("Failed to load prompt config from %s: %s", PROMPT_CONFIG_PATH, exc)
+        return default_config
+
+
+def _save_prompt_config_unlocked() -> None:
+    PROMPT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PROMPT_CONFIG_PATH.write_text(
+        json.dumps(_prompt_config, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _normalize_conversation_key(conversation_id: Any) -> str | None:
+    if conversation_id is None:
+        return None
+    text = str(conversation_id).strip()
+    if not text or not text.isdigit():
+        return None
+    return text
+
+
+def _resolve_system_prompt(conversation_id: Any) -> tuple[str, str]:
+    conv_key = _normalize_conversation_key(conversation_id)
+    with prompt_config_lock:
+        if conv_key:
+            override = _prompt_config["conversation_prompts"].get(conv_key, "").strip()
+            if override:
+                return override, f"conversation:{conv_key}"
+        return _prompt_config["default_prompt"], "default"
+
+
+def _set_default_prompt(prompt: str) -> None:
+    clean = (prompt or "").strip()
+    if not clean:
+        raise ValueError("Prompt padrão não pode ser vazio")
+    with prompt_config_lock:
+        _prompt_config["default_prompt"] = clean
+        _save_prompt_config_unlocked()
+
+
+def _set_conversation_prompt(conversation_id: Any, prompt: str) -> str:
+    conv_key = _normalize_conversation_key(conversation_id)
+    if conv_key is None:
+        raise ValueError("conversation_id inválido")
+    clean = (prompt or "").strip()
+    if not clean:
+        raise ValueError("Prompt da conversa não pode ser vazio")
+    with prompt_config_lock:
+        _prompt_config["conversation_prompts"][conv_key] = clean
+        _save_prompt_config_unlocked()
+    return conv_key
+
+
+def _delete_conversation_prompt(conversation_id: Any) -> str:
+    conv_key = _normalize_conversation_key(conversation_id)
+    if conv_key is None:
+        raise ValueError("conversation_id inválido")
+    with prompt_config_lock:
+        _prompt_config["conversation_prompts"].pop(conv_key, None)
+        _save_prompt_config_unlocked()
+    return conv_key
+
+
+_prompt_config: dict[str, Any] = _default_prompt_config()
 
 
 def _read_bounded_int_env(
@@ -103,6 +213,13 @@ OLLAMA_SYSTEM_PROMPT = os.getenv(
     "OLLAMA_SYSTEM_PROMPT",
     "Voce e um atendente virtual objetivo e educado. Responda em portugues do Brasil.",
 )
+PROMPT_CONFIG_PATH = Path(
+    os.getenv(
+        "PROMPT_CONFIG_PATH",
+        str(Path(__file__).resolve().parent / "data" / "prompt_config.json"),
+    )
+)
+_prompt_config = _load_prompt_config()
 OLLAMA_TIMEOUT_MAX_SECONDS = _read_bounded_int_env(
     "OLLAMA_TIMEOUT_MAX_SECONDS", default=300, min_value=30, max_value=1800
 )
@@ -126,6 +243,7 @@ OLLAMA_REQUEST_TIMEOUT = _read_bounded_int_env(
 )
 MAX_RESPONSE_CHARS = int(os.getenv("MAX_RESPONSE_CHARS", "1200"))
 IGNORE_BOT_PREFIX = os.getenv("IGNORE_BOT_PREFIX", "!botoff")
+AUTO_REOPEN_CONVERSATION = os.getenv("AUTO_REOPEN_CONVERSATION", "true").lower() == "true"
 
 # ---------------------------------------------------------------------------
 # Melhoria 5 — controle de verbosidade do trace de inferência.
@@ -133,6 +251,8 @@ IGNORE_BOT_PREFIX = os.getenv("IGNORE_BOT_PREFIX", "!botoff")
 # Quando True, emite trace completo, porém sempre sanitizado.
 # ---------------------------------------------------------------------------
 DEBUG_INFERENCE_TRACE = os.getenv("DEBUG_INFERENCE_TRACE", "false").lower() == "true"
+INFERENCE_AUDIT_TRACE = os.getenv("INFERENCE_AUDIT_TRACE", "false").lower() == "true"
+INFERENCE_LOG_FULL_TEXT = os.getenv("INFERENCE_LOG_FULL_TEXT", "false").lower() == "true"
 
 
 def _read_optional_int_env(var_name: str) -> int | None:
@@ -213,7 +333,10 @@ def _parse_planner_response(raw: str) -> dict[str, str]:
 
 
 def _call_query_planner(
-    content: str, regex_intent: str, history_context: str
+    content: str,
+    regex_intent: str,
+    history_context: str,
+    api_calls: list[dict[str, Any]] | None = None,
 ) -> dict[str, str]:
     """Call the LLM to plan optimised search queries.
 
@@ -249,13 +372,35 @@ def _call_query_planner(
         if options:
             payload["options"] = options
 
+        planner_url = f"{OLLAMA_BASE_URL}/api/chat"
+        request_chars = sum(len((m.get("content") or "")) for m in messages)
+        t_api = time.time()
         response = requests.post(
-            f"{OLLAMA_BASE_URL}/api/chat",
+            planner_url,
             json=payload,
             timeout=QUERY_PLANNER_TIMEOUT,
         )
+        elapsed_ms = (time.time() - t_api) * 1000
         response.raise_for_status()
         data = response.json()
+        if api_calls is not None:
+            _append_api_call(
+                api_calls,
+                service="ollama",
+                operation="query_planner",
+                method="POST",
+                url=planner_url,
+                status=response.status_code,
+                elapsed_ms=elapsed_ms,
+                request_bytes=request_chars,
+                response_bytes=len(response.text or ""),
+                extra={
+                    "model": QUERY_PLANNER_MODEL,
+                    "timeout_s": QUERY_PLANNER_TIMEOUT,
+                    "eval_count": data.get("eval_count"),
+                    "prompt_eval_count": data.get("prompt_eval_count"),
+                },
+            )
         raw_reply = ((data.get("message") or {}).get("content") or "").strip()
         if not raw_reply:
             logger.warning("Query planner returned empty response")
@@ -269,6 +414,18 @@ def _call_query_planner(
         )
         return parsed
     except Exception as exc:
+        if api_calls is not None:
+            _append_api_call(
+                api_calls,
+                service="ollama",
+                operation="query_planner",
+                method="POST",
+                url=f"{OLLAMA_BASE_URL}/api/chat",
+                status="error",
+                elapsed_ms=0,
+                error=str(exc),
+                extra={"model": QUERY_PLANNER_MODEL, "timeout_s": QUERY_PLANNER_TIMEOUT},
+            )
         logger.warning("Query planner failed (falling back to raw query): %s", exc)
         return {}
 
@@ -290,7 +447,7 @@ _SANITIZE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 # Limite de caracteres por chunk nos logs (Melhoria 5)
-_LOG_CHUNK_MAX_CHARS = 500
+_LOG_CHUNK_MAX_CHARS = int(os.getenv("INFERENCE_LOG_CHUNK_MAX_CHARS", "2000"))
 
 
 def _sanitize_for_log(text: str) -> str:
@@ -304,9 +461,44 @@ def _sanitize_for_log(text: str) -> str:
 
 def _truncate_for_log(text: str, max_chars: int = _LOG_CHUNK_MAX_CHARS) -> str:
     """Trunca texto longo para logs, adicionando indicador de corte."""
+    if INFERENCE_LOG_FULL_TEXT:
+        return text
     if not text or len(text) <= max_chars:
         return text
     return text[:max_chars] + f"... [{len(text) - max_chars} chars truncados]"
+
+
+def _append_api_call(
+    api_calls: list[dict[str, Any]],
+    *,
+    service: str,
+    operation: str,
+    method: str,
+    url: str,
+    status: int | str,
+    elapsed_ms: float,
+    request_bytes: int | None = None,
+    response_bytes: int | None = None,
+    error: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    entry: dict[str, Any] = {
+        "service": service,
+        "operation": operation,
+        "method": method,
+        "url": url,
+        "status": status,
+        "elapsed_ms": round(elapsed_ms, 1),
+    }
+    if request_bytes is not None:
+        entry["request_bytes"] = request_bytes
+    if response_bytes is not None:
+        entry["response_bytes"] = response_bytes
+    if error:
+        entry["error"] = error
+    if extra:
+        entry["extra"] = extra
+    api_calls.append(entry)
 
 
 # ---------------------------------------------------------------------------
@@ -554,7 +746,13 @@ def should_reply(payload: dict[str, Any]) -> tuple[bool, str]:
 
     return True, "ok"
 
-def _call_ollama(messages: list[dict[str, str]], model: str, timeout: int) -> str:
+def _call_ollama(
+    messages: list[dict[str, str]],
+    model: str,
+    timeout: int,
+    api_calls: list[dict[str, Any]] | None = None,
+    operation: str = "generate_reply",
+) -> str:
     """Call the Ollama chat API and return the response text."""
     url = f"{OLLAMA_BASE_URL}/api/chat"
     payload: dict[str, Any] = {
@@ -573,11 +771,31 @@ def _call_ollama(messages: list[dict[str, str]], model: str, timeout: int) -> st
     if options:
         payload["options"] = options
 
-    response = requests.post(
-        url,
-        json=payload,
-        timeout=timeout,
-    )
+    request_chars = sum(len((m.get("content") or "")) for m in messages)
+    t_api = time.time()
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        if api_calls is not None:
+            _append_api_call(
+                api_calls,
+                service="ollama",
+                operation=operation,
+                method="POST",
+                url=url,
+                status="error",
+                elapsed_ms=(time.time() - t_api) * 1000,
+                request_bytes=request_chars,
+                error=str(exc),
+                extra={"model": model, "timeout_s": timeout},
+            )
+        raise
+
+    elapsed_ms = (time.time() - t_api) * 1000
     if response.status_code >= 400:
         body_preview = (response.text or "").strip().replace("\n", " ")[:300]
         logger.warning(
@@ -589,6 +807,26 @@ def _call_ollama(messages: list[dict[str, str]], model: str, timeout: int) -> st
         )
     response.raise_for_status()
     data = response.json()
+    if api_calls is not None:
+        _append_api_call(
+            api_calls,
+            service="ollama",
+            operation=operation,
+            method="POST",
+            url=url,
+            status=response.status_code,
+            elapsed_ms=elapsed_ms,
+            request_bytes=request_chars,
+            response_bytes=len(response.text or ""),
+            extra={
+                "model": model,
+                "timeout_s": timeout,
+                "eval_count": data.get("eval_count"),
+                "prompt_eval_count": data.get("prompt_eval_count"),
+                "total_duration": data.get("total_duration"),
+                "load_duration": data.get("load_duration"),
+            },
+        )
     content = ((data.get("message") or {}).get("content") or "").strip()
     if not content:
         raise ValueError("Ollama returned an empty response")
@@ -615,6 +853,7 @@ def build_prompt(payload: dict[str, Any]) -> tuple[list[dict[str, str]], dict[st
     channel = conversation.get("channel") or "whatsapp"
     account_id = account.get("id")
     conversation_id = conversation.get("id")
+    system_prompt, system_prompt_source = _resolve_system_prompt(conversation_id)
 
     t0 = time.time()
     timings: dict[str, float] = {}
@@ -643,10 +882,16 @@ def build_prompt(payload: dict[str, Any]) -> tuple[list[dict[str, str]], dict[st
         content, intent_result, history_context,
     )
 
+    api_calls: list[dict[str, Any]] = []
     planned: dict[str, str] = {}
     planner_raw = ""
     if planner_used:
-        planned = _call_query_planner(content, str(regex_intent), history_context)
+        planned = _call_query_planner(
+            content,
+            str(regex_intent),
+            history_context,
+            api_calls=api_calls,
+        )
         if planned:
             planner_raw = str(planned)
     timings["planner_ms"] = round((time.time() - t_planner) * 1000, 1)
@@ -679,6 +924,7 @@ def build_prompt(payload: dict[str, Any]) -> tuple[list[dict[str, str]], dict[st
     rag_results_raw_count = 0
     rag_results_filtered_count = 0
     raw_rag_results: list[RAGSearchResult] = []
+    policy_results: list[RAGSearchResult] = []
 
     # 4a. RAG document search — agora usa search_documents_detailed (Melhoria 1)
     t_rag = time.time()
@@ -927,7 +1173,7 @@ def build_prompt(payload: dict[str, Any]) -> tuple[list[dict[str, str]], dict[st
 
     # ---- 6. Metrics log (Melhoria 7 — timings) --------------------------
     timings["total_ms"] = round((time.time() - t0) * 1000, 1)
-    prompt_chars = len(OLLAMA_SYSTEM_PROMPT) + len(user_message)
+    prompt_chars = len(system_prompt) + len(user_message)
     logger.info(
         "Prompt built | intent=%s planner=%s(%s) history_msgs=%d rag_evidence=%d prompt_chars=%d timings=%s",
         detected_intent,
@@ -940,12 +1186,22 @@ def build_prompt(payload: dict[str, Any]) -> tuple[list[dict[str, str]], dict[st
     )
 
     messages = [
-        {"role": "system", "content": OLLAMA_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_message},
     ]
 
     # ---- Melhoria 7 — trace enriquecido para observabilidade ------------
     trace: dict[str, Any] = {
+        "trace_id": uuid.uuid4().hex[:10],
+        "webhook_meta": {
+            "event": payload.get("event"),
+            "message_type": payload.get("message_type"),
+            "private": payload.get("private"),
+            "account_id": account_id,
+            "conversation_id": conversation_id,
+            "contact_id": contact.get("id"),
+            "sender_type": (payload.get("sender") or {}).get("type"),
+        },
         "user_input": content,
         "regex_intent": str(regex_intent),
         "intent": str(detected_intent),
@@ -964,6 +1220,7 @@ def build_prompt(payload: dict[str, Any]) -> tuple[list[dict[str, str]], dict[st
         "policy_fallback_used": bool(policy_fallback_query and not planned.get("policy_query")),
         "product_search_query": product_search_query,
         "history_context": history_context,
+        "history_messages": history,
         "rag_evidence": [
             {
                 "source": r.source,
@@ -973,12 +1230,28 @@ def build_prompt(payload: dict[str, Any]) -> tuple[list[dict[str, str]], dict[st
             }
             for r in raw_rag_results
         ],
+        "rag_files_used": sorted(
+            {
+                (r.source_path or r.source)
+                for r in (raw_rag_results + policy_results)
+                if (r.source_path or r.source)
+            }
+        ),
         "rag_results_raw_count": rag_results_raw_count,
         "rag_chunks": [r.text for r in raw_rag_results],
+        "policy_rag_chunks": [r.text for r in policy_results],
         "shopify_context": shopify_context,
         "policy_context": all_policy,
         "tool_context": rag_evidence_context,
-        "system_prompt": OLLAMA_SYSTEM_PROMPT,
+        "contexts_used": {
+            "history": bool(history_context),
+            "rag": bool(rag_evidence_context),
+            "policy": bool(all_policy),
+            "shopify": bool(shopify_context),
+        },
+        "api_calls": api_calls,
+        "system_prompt": system_prompt,
+        "system_prompt_source": system_prompt_source,
         "user_message": user_message,
         "timings": timings,
     }
@@ -1002,13 +1275,14 @@ def _log_full_trace(trace: dict[str, Any], model_used: str, reply: str, elapsed:
     summary_lines = [
         "",
         sep,
-        f"TRACE SUMMARY  [{ts}]  model={model_used}  elapsed={elapsed:.2f}s",
+        f"TRACE SUMMARY  [{ts}]  trace_id={trace.get('trace_id', '-')}  model={model_used}  elapsed={elapsed:.2f}s",
         sep,
         f"  regex_intent     = {trace.get('regex_intent', '?')}",
         f"  final_intent     = {trace.get('intent', '?')}",
         f"  planner_used     = {trace.get('planner_used', '?')}  reason={trace.get('planner_skip_reason', '?')}",
         f"  policy_fallback  = {trace.get('policy_fallback_used', False)}",
         f"  rag_evidence     = {trace.get('rag_results_raw_count', 0)} retrieved",
+        f"  external_calls   = {len(trace.get('api_calls', []))}",
         f"  intent_signals   = {trace.get('intent_signals', {})}",
     ]
     # Score de cada evidência (Melhoria 7)
@@ -1023,8 +1297,8 @@ def _log_full_trace(trace: dict[str, Any], model_used: str, reply: str, elapsed:
     logger.info(summary_text)
     _inference_logger.info(summary_text)
 
-    # ---- Trace completo (apenas com DEBUG_INFERENCE_TRACE=true) ----
-    if not DEBUG_INFERENCE_TRACE:
+    # ---- Trace completo (DEBUG_INFERENCE_TRACE ou modo de auditoria) ----
+    if not (DEBUG_INFERENCE_TRACE or INFERENCE_AUDIT_TRACE):
         return
 
     # Sanitizar dados sensíveis antes de gravar (Melhoria 5)
@@ -1033,8 +1307,10 @@ def _log_full_trace(trace: dict[str, Any], model_used: str, reply: str, elapsed:
 
     lines = [
         "",
-        f"TRACE — FULL PIPELINE  [{ts}]",
+        f"TRACE — FULL PIPELINE  [{ts}]  trace_id={trace.get('trace_id', '-')}",
         sep,
+        "[WEBHOOK META]",
+        s(str(trace.get("webhook_meta", {}))),
         f"[REGEX INTENT]  {trace.get('regex_intent', '?')}",
         f"[FINAL INTENT]  {trace['intent']}",
         f"[INTENT SIGNALS]  {trace.get('intent_signals', {})}",
@@ -1066,7 +1342,13 @@ def _log_full_trace(trace: dict[str, Any], model_used: str, reply: str, elapsed:
         lines += ["", "[SHOPIFY QUERY — busca de produto]", s(trace["product_search_query"])]
 
     if trace.get("history_context"):
-        lines += ["", "[HISTÓRICO DA CONVERSA]", s(t(trace["history_context"]))]
+        lines += ["", "[HISTÓRICO DA CONVERSA — formatado]", s(t(trace["history_context"]))]
+    if trace.get("history_messages"):
+        lines += [
+            "",
+            "[HISTÓRICO DA CONVERSA — estruturado]",
+            s(t(str(trace["history_messages"]), 4000)),
+        ]
 
     # Evidências RAG com scores (Melhoria 7)
     rag_chunks = trace.get("rag_chunks", [])
@@ -1092,6 +1374,14 @@ def _log_full_trace(trace: dict[str, Any], model_used: str, reply: str, elapsed:
     if policy_ctx:
         lines += ["", "[POLÍTICAS]", s(t(policy_ctx))]
 
+    lines += ["", "[CONTEXTOS UTILIZADOS]", s(str(trace.get("contexts_used", {})))]
+
+    files_used = trace.get("rag_files_used") or []
+    if files_used:
+        lines += ["", "[ARQUIVOS USADOS PARA CONTEXTO]"]
+        for file_name in files_used:
+            lines.append(f"  - {file_name}")
+
     lines += [
         "",
         "[PROMPT — system]",
@@ -1099,6 +1389,28 @@ def _log_full_trace(trace: dict[str, Any], model_used: str, reply: str, elapsed:
         "",
         "[PROMPT — user message]",
         s(t(trace["user_message"], 2000)),
+    ]
+
+    if INFERENCE_AUDIT_TRACE and trace.get("api_calls"):
+        lines += ["", "[CONSUMO DE APIs EXTERNAS]"]
+        for call in trace["api_calls"]:
+            lines.append(
+                "  - {service}/{operation} {method} status={status} elapsed={elapsed}ms req={req} resp={resp}".format(
+                    service=call.get("service", "?"),
+                    operation=call.get("operation", "?"),
+                    method=call.get("method", "?"),
+                    status=call.get("status", "?"),
+                    elapsed=call.get("elapsed_ms", "?"),
+                    req=call.get("request_bytes", "?"),
+                    resp=call.get("response_bytes", "?"),
+                )
+            )
+            if call.get("extra"):
+                lines.append(f"    extra={s(t(str(call.get('extra')), 1000))}")
+            if call.get("error"):
+                lines.append(f"    error={s(t(str(call.get('error')), 1000))}")
+
+    lines += [
         "",
         f"[RESPOSTA — model={model_used}  elapsed={elapsed:.2f}s]",
         s(reply),
@@ -1121,7 +1433,13 @@ def generate_reply(payload: dict[str, Any]) -> str:
     )
 
     try:
-        reply = _call_ollama(messages, OLLAMA_MODEL, OLLAMA_MAIN_TIMEOUT)
+        reply = _call_ollama(
+            messages,
+            OLLAMA_MODEL,
+            OLLAMA_MAIN_TIMEOUT,
+            api_calls=trace.get("api_calls"),
+            operation="generate_reply_primary",
+        )
         elapsed = time.time() - t0
         logger.info(
             "Reply generated | model=%s total_time=%.2fs", OLLAMA_MODEL, elapsed
@@ -1137,7 +1455,13 @@ def generate_reply(payload: dict[str, Any]) -> str:
         )
 
     try:
-        reply = _call_ollama(messages, OLLAMA_FALLBACK_MODEL, OLLAMA_FALLBACK_TIMEOUT)
+        reply = _call_ollama(
+            messages,
+            OLLAMA_FALLBACK_MODEL,
+            OLLAMA_FALLBACK_TIMEOUT,
+            api_calls=trace.get("api_calls"),
+            operation="generate_reply_fallback",
+        )
         elapsed = time.time() - t0
         logger.info(
             "Reply generated | model=%s (fallback) total_time=%.2fs",
@@ -1195,11 +1519,51 @@ def send_chatwoot_message(payload: dict[str, Any], reply_text: str) -> None:
     response.raise_for_status()
 
 
+def reopen_chatwoot_conversation(payload: dict[str, Any]) -> None:
+    """Best-effort reopen of the conversation to keep it visible in Open views."""
+    account = payload.get("account") or {}
+    conversation = payload.get("conversation") or {}
+    account_id = account.get("id")
+    conversation_id = conversation.get("id")
+
+    if not account_id or not conversation_id:
+        raise ValueError("Webhook payload missing account or conversation identifiers")
+
+    if not CHATWOOT_API_TOKEN:
+        raise ValueError("CHATWOOT_API_TOKEN is not configured")
+
+    response = requests.patch(
+        (
+            f"{CHATWOOT_BASE_URL}/api/v1/accounts/{account_id}"
+            f"/conversations/{conversation_id}"
+        ),
+        headers={
+            "Content-Type": "application/json",
+            "api_access_token": CHATWOOT_API_TOKEN,
+        },
+        json={
+            "status": "open",
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+
+
 def worker() -> None:
     while True:
         payload = job_queue.get()
         try:
             reply_text = generate_reply(payload)
+
+            if AUTO_REOPEN_CONVERSATION:
+                try:
+                    reopen_chatwoot_conversation(payload)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to reopen conversation before reply: %s",
+                        exc,
+                    )
+
             send_chatwoot_message(payload, reply_text)
             logger.info("Auto-reply sent for conversation %s", (payload.get("conversation") or {}).get("id"))
         except Exception:
@@ -1211,6 +1575,160 @@ def worker() -> None:
 @app.get("/healthz")
 def healthz() -> Response:
     return Response("ok\n", mimetype="text/plain")
+
+
+@app.route("/prompt-config", methods=["GET", "POST"])
+def prompt_config_page() -> Response:
+    message = ""
+    error = ""
+
+    if request.method == "POST":
+        action = (request.form.get("action") or "").strip()
+        try:
+            if action == "save_default":
+                _set_default_prompt(request.form.get("default_prompt") or "")
+                message = "Prompt padrão atualizado com sucesso."
+            elif action == "save_conversation":
+                conv_id = request.form.get("conversation_id")
+                _set_conversation_prompt(conv_id, request.form.get("conversation_prompt") or "")
+                message = f"Prompt da conversa {conv_id} atualizado."
+            elif action == "delete_conversation":
+                conv_id = request.form.get("conversation_id")
+                _delete_conversation_prompt(conv_id)
+                message = f"Override da conversa {conv_id} removido."
+            else:
+                error = "Ação inválida."
+        except Exception as exc:
+            error = str(exc)
+
+    with prompt_config_lock:
+        default_prompt = _prompt_config.get("default_prompt", "")
+        conversation_prompts = dict(_prompt_config.get("conversation_prompts", {}))
+
+    rows = "\n".join(
+        (
+            "<tr>"
+            f"<td>{escape(conv_id)}</td>"
+            f"<td><pre>{escape(prompt_text)}</pre></td>"
+            "<td>"
+            "<form method='post'>"
+            "<input type='hidden' name='action' value='delete_conversation' />"
+            f"<input type='hidden' name='conversation_id' value='{escape(conv_id)}' />"
+            "<button type='submit'>Remover</button>"
+            "</form>"
+            "</td>"
+            "</tr>"
+        )
+        for conv_id, prompt_text in sorted(
+            conversation_prompts.items(),
+            key=lambda item: int(item[0]),
+        )
+    )
+    if not rows:
+        rows = "<tr><td colspan='3'><em>Sem overrides por conversa.</em></td></tr>"
+
+    html = f"""
+<!doctype html>
+<html lang='pt-BR'>
+<head>
+  <meta charset='utf-8' />
+  <title>Prompt Config</title>
+  <style>
+    body {{ font-family: Segoe UI, sans-serif; margin: 24px; max-width: 1100px; }}
+    h1 {{ margin-bottom: 8px; }}
+    textarea {{ width: 100%; min-height: 150px; }}
+    input[type='text'], input[type='number'] {{ width: 260px; padding: 6px; }}
+    button {{ padding: 8px 12px; margin-top: 8px; }}
+    .ok {{ color: #166534; }}
+    .err {{ color: #991b1b; }}
+    table {{ width: 100%; border-collapse: collapse; margin-top: 16px; }}
+    th, td {{ border: 1px solid #d1d5db; padding: 8px; vertical-align: top; }}
+    pre {{ white-space: pre-wrap; margin: 0; }}
+    .card {{ border: 1px solid #d1d5db; border-radius: 8px; padding: 16px; margin-top: 16px; }}
+  </style>
+</head>
+<body>
+  <h1>Configuração de Prompt do Agente</h1>
+  <p>Edite o texto de regras que o agente lê antes de responder.</p>
+  <p class='ok'>{escape(message)}</p>
+  <p class='err'>{escape(error)}</p>
+
+  <div class='card'>
+    <h2>Prompt Padrão (todas as conversas)</h2>
+    <form method='post'>
+      <input type='hidden' name='action' value='save_default' />
+      <textarea name='default_prompt'>{escape(default_prompt)}</textarea>
+      <br />
+      <button type='submit'>Salvar Prompt Padrão</button>
+    </form>
+  </div>
+
+  <div class='card'>
+    <h2>Override por Conversa</h2>
+    <form method='post'>
+      <input type='hidden' name='action' value='save_conversation' />
+      <label>Conversation ID</label><br />
+      <input type='number' name='conversation_id' min='1' required />
+      <br /><br />
+      <label>Prompt específico da conversa</label>
+      <textarea name='conversation_prompt' required></textarea>
+      <br />
+      <button type='submit'>Salvar Override da Conversa</button>
+    </form>
+  </div>
+
+  <div class='card'>
+    <h2>Overrides Ativos</h2>
+    <table>
+      <thead><tr><th>Conversation ID</th><th>Prompt</th><th>Ações</th></tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+  </div>
+</body>
+</html>
+"""
+    return Response(html, mimetype="text/html")
+
+
+@app.get("/api/prompt-config")
+def get_prompt_config() -> Response:
+    with prompt_config_lock:
+        data = {
+            "default_prompt": _prompt_config.get("default_prompt", ""),
+            "conversation_prompts": dict(_prompt_config.get("conversation_prompts", {})),
+        }
+    return jsonify(data)
+
+
+@app.post("/api/prompt-config/default")
+def update_default_prompt() -> tuple[Response, int] | Response:
+    body = request.get_json(silent=True) or {}
+    prompt = body.get("prompt")
+    try:
+        _set_default_prompt(prompt or "")
+        return jsonify({"status": "ok"})
+    except Exception as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 400
+
+
+@app.post("/api/prompt-config/conversation/<int:conversation_id>")
+def update_conversation_prompt(conversation_id: int) -> tuple[Response, int] | Response:
+    body = request.get_json(silent=True) or {}
+    prompt = body.get("prompt")
+    try:
+        key = _set_conversation_prompt(conversation_id, prompt or "")
+        return jsonify({"status": "ok", "conversation_id": key})
+    except Exception as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 400
+
+
+@app.delete("/api/prompt-config/conversation/<int:conversation_id>")
+def delete_conversation_prompt(conversation_id: int) -> tuple[Response, int] | Response:
+    try:
+        key = _delete_conversation_prompt(conversation_id)
+        return jsonify({"status": "ok", "conversation_id": key})
+    except Exception as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 400
 
 
 @app.post("/chat")

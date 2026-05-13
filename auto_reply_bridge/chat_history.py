@@ -14,6 +14,9 @@ logger = logging.getLogger("auto-reply-bridge.history")
 
 CHATWOOT_BASE_URL = os.getenv("CHATWOOT_BASE_URL", "http://localhost:65271").rstrip("/")
 CHATWOOT_API_TOKEN = os.getenv("CHATWOOT_API_TOKEN", "")
+# User/agent token for endpoints that reject bot tokens (e.g. /messages).
+# Must be a Profile Access Token from Chatwoot, NOT the Agent Bot token.
+CHATWOOT_USER_API_TOKEN = os.getenv("CHATWOOT_USER_API_TOKEN", "")
 CHAT_HISTORY_ENABLED = os.getenv("CHAT_HISTORY_ENABLED", "true").lower() == "true"
 CHAT_HISTORY_MAX_MESSAGES = int(os.getenv("CHAT_HISTORY_MAX_MESSAGES", "10"))
 CHAT_HISTORY_MAX_CHARS = int(os.getenv("CHAT_HISTORY_MAX_CHARS", "3000"))
@@ -144,10 +147,14 @@ def fetch_history(account_id: int, conversation_id: int) -> list[dict[str, str]]
     if not CHAT_HISTORY_ENABLED:
         return []
 
+    if not CHATWOOT_USER_API_TOKEN:
+        logger.warning(
+            "CHATWOOT_USER_API_TOKEN not set — skipping history fetch to avoid bot token 401."
+        )
+        return []
+
     try:
-        headers = {"api_access_token": CHATWOOT_API_TOKEN}
-        if CHATWOOT_API_TOKEN:
-            headers["Authorization"] = f"Bearer {CHATWOOT_API_TOKEN}"
+        headers = {"api_access_token": CHATWOOT_USER_API_TOKEN}
 
         response = requests.get(
             (
