@@ -1,0 +1,1 @@
+"""External integration contracts for the local-first backend."""

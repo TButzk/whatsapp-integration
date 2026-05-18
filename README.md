@@ -25,6 +25,36 @@ Opcoes uteis:
 .\setup-and-start.ps1 -StartBridge
 ```
 
+## Recebimento de e-mails com Cloudflare Email Routing
+
+Se você quer receber e-mails do seu domínio sem hospedar um mailserver, use o Cloudflare Email Routing. É a opção gratuita mais simples para encaminhar mensagens para uma caixa já existente.
+
+Fluxo recomendado:
+
+1. No Cloudflare, ative `Email Routing` para o domínio.
+2. Crie o endereço de encaminhamento, por exemplo `contato@tiarlesbutzk.com.br`.
+3. Aponte o destino para uma caixa que você já usa, como Gmail ou Outlook.
+4. No DNS, mantenha os registros que o Cloudflare solicitar para validação do encaminhamento.
+
+Isso cobre o recebimento de e-mails do domínio. O Chatwoot continua usando SMTP apenas para envio, com o bloco abaixo.
+
+Depois, ajuste no `.env` do Chatwoot:
+
+```env
+SMTP_ADDRESS=host.docker.internal
+SMTP_PORT=587
+SMTP_USERNAME=chatwoot@seu-dominio.com
+SMTP_PASSWORD=TroquePorSenhaForte
+SMTP_AUTHENTICATION=plain
+SMTP_ENABLE_STARTTLS_AUTO=true
+MAIL_DOMAIN=seu-dominio.com
+```
+
+Observacao importante:
+
+- Cloudflare Email Routing resolve recebimento por encaminhamento, mas não substitui um servidor SMTP de saída.
+- Se você quiser enviar e receber como caixa completa no domínio, aí ainda precisará de um provedor de e-mail ou mailserver próprio.
+
 ## Recuperacao rapida (self-heal)
 
 Quando o dominio publico ou o gateway local nao abrirem, execute:

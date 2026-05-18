@@ -16,6 +16,10 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request
 
+# LEGACY NOTICE:
+# This module is kept for backward compatibility only.
+# New development must use local_ai_backend instead of auto_reply_bridge.
+
 _DOTENV_PATH = Path(__file__).resolve().with_name(".env")
 load_dotenv(dotenv_path=_DOTENV_PATH, override=True)
 

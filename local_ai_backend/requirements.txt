@@ -1,0 +1,10 @@
+fastapi>=0.116,<1.0
+uvicorn[standard]>=0.35,<1.0
+pydantic>=2.13,<3.0
+pydantic-settings>=2.11,<3.0
+pytest>=8.4,<9.0
+httpx>=0.28,<1.0
+redis>=6.2,<7.0
+ruff>=0.12,<1.0
+black>=24.10,<26.0
+chromadb>=0.6,<2.0

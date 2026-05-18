@@ -18,6 +18,13 @@
 
 set -euo pipefail
 
+# Ativa o perfil de e-mail com ENABLE_MAIL_SERVER=true ./setup.sh
+ENABLE_MAIL_SERVER="${ENABLE_MAIL_SERVER:-false}"
+COMPOSE_ARGS=()
+if [ "$ENABLE_MAIL_SERVER" = "true" ]; then
+    COMPOSE_ARGS+=(--profile mail)
+fi
+
 # ---------------------------------------------------------------------------
 # Cores para output
 # ---------------------------------------------------------------------------
@@ -52,6 +59,9 @@ if [ ! -f ".env" ]; then
 fi
 
 info "Pré-requisitos OK."
+if [ "$ENABLE_MAIL_SERVER" = "true" ]; then
+    warn "Perfil de e-mail ativado: portas 25/587/993 serao publicadas no host."
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Configurar Swap (recomendado para o Sidekiq)
@@ -84,7 +94,7 @@ fi
 # 3. Pull das imagens Docker
 # ---------------------------------------------------------------------------
 info "Baixando imagens Docker..."
-docker compose pull
+docker compose "${COMPOSE_ARGS[@]}" pull
 
 # ---------------------------------------------------------------------------
 # 4. Inicializar / migrar o banco de dados
@@ -95,7 +105,7 @@ docker compose pull
 #   - Se o banco já existir, aplica apenas as migrações pendentes.
 # ---------------------------------------------------------------------------
 info "Inicializando/migrando o banco de dados..."
-docker compose run --rm \
+docker compose "${COMPOSE_ARGS[@]}" run --rm \
     -e RAILS_ENV=production \
     whatsapp-chatwoot-web \
     bundle exec rails db:chatwoot_prepare
@@ -106,7 +116,7 @@ info "Banco de dados pronto."
 # 5. Subir todos os serviços em modo daemon
 # ---------------------------------------------------------------------------
 info "Subindo os serviços em background..."
-docker compose up -d
+docker compose "${COMPOSE_ARGS[@]}" up -d
 
 # ---------------------------------------------------------------------------
 # 6. Relatório final

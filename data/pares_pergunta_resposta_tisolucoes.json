@@ -1,0 +1,1016 @@
+[
+  {
+    "id": "institucional-01",
+    "question": "Que tipo de base documental é esta?",
+    "answer": "Esta é uma base documental fictícia de homologação, criada para testes de assistentes com RAG no ambiente TiSolucoes Store.",
+    "category": "institucional",
+    "aliases": [
+      "essa base é real",
+      "que documento é esse",
+      "é uma base de teste",
+      "qual a natureza da base",
+      "a loja é de homologação"
+    ]
+  },
+  {
+    "id": "institucional-02",
+    "question": "Qual é o nome da loja de teste?",
+    "answer": "O nome de operação da loja é TiSolucoes Store - Ambiente de Homologação.",
+    "category": "institucional",
+    "aliases": [
+      "qual o nome da loja",
+      "como se chama a loja",
+      "nome da operação",
+      "qual é a loja",
+      "qual empresa é essa"
+    ]
+  },
+  {
+    "id": "institucional-03",
+    "question": "Qual é o canal principal da loja?",
+    "answer": "O canal principal da TiSolucoes Store - Ambiente de Homologação é um e-commerce de testes.",
+    "category": "institucional",
+    "aliases": [
+      "qual canal de venda",
+      "a loja vende por onde",
+      "é ecommerce",
+      "canal principal",
+      "onde a loja opera"
+    ]
+  },
+  {
+    "id": "institucional-04",
+    "question": "Qual catálogo é usado pela loja?",
+    "answer": "A loja usa um catálogo Shopify, composto principalmente por brinquedos, colecionáveis, playsets, itens infantis, alguns produtos esportivos de neve e gift cards.",
+    "category": "catalogo",
+    "aliases": [
+      "qual catálogo vocês usam",
+      "de onde vem o catálogo",
+      "catálogo shopify",
+      "quais produtos existem na loja",
+      "o que tem no catálogo"
+    ]
+  },
+  {
+    "id": "institucional-05",
+    "question": "Qual idioma deve ser usado no atendimento?",
+    "answer": "O atendimento deve ser feito em português do Brasil, mesmo quando o título do produto estiver em inglês.",
+    "category": "regras_resposta",
+    "aliases": [
+      "qual idioma responder",
+      "pode responder em inglês",
+      "atendimento em português",
+      "títulos em inglês",
+      "como responder ao cliente"
+    ]
+  },
+  {
+    "id": "institucional-06",
+    "question": "O assistente pode usar nomes de produtos em inglês?",
+    "answer": "Sim. O assistente pode responder com nomes de produtos em inglês, pois o catálogo original usa títulos em inglês, mas a resposta ao cliente deve ser em português do Brasil.",
+    "category": "regras_resposta",
+    "aliases": [
+      "produto em inglês pode",
+      "nomes em inglês",
+      "título do produto em inglês",
+      "posso citar produto em inglês",
+      "catálogo em inglês"
+    ]
+  },
+  {
+    "id": "atendimento-01",
+    "question": "Quais são os canais de atendimento?",
+    "answer": "Os canais fictícios de atendimento são o e-mail suporte@tisolucoes-teste.example e o WhatsApp +55 11 4000-1234.",
+    "category": "atendimento",
+    "aliases": [
+      "como entro em contato",
+      "qual o whatsapp",
+      "qual o email de suporte",
+      "contato da loja",
+      "canais de suporte"
+    ]
+  },
+  {
+    "id": "atendimento-02",
+    "question": "Qual é o horário de atendimento?",
+    "answer": "O horário fictício de atendimento é de segunda a sexta, das 09:00 às 18:00.",
+    "category": "atendimento",
+    "aliases": [
+      "que horas atende",
+      "horário do suporte",
+      "atende no sábado",
+      "horário de funcionamento",
+      "quando posso falar com vocês"
+    ]
+  },
+  {
+    "id": "regras-01",
+    "question": "Quais informações o assistente pode afirmar como fato?",
+    "answer": "O assistente só deve afirmar como fato informações presentes na base, como nome do produto, marca/vendor, descrição do produto, faixa de preço, variantes, status de publicação e políticas documentadas.",
+    "category": "regras_resposta",
+    "aliases": [
+      "o que pode afirmar",
+      "quais dados são confiáveis",
+      "quais fatos usar",
+      "informações permitidas",
+      "o que o bot pode responder"
+    ]
+  },
+  {
+    "id": "regras-03",
+    "question": "O assistente pode informar previsão exata por CEP?",
+    "answer": "Não. O assistente não deve inventar previsão exata por CEP. O valor do frete e prazos específicos dependem de consulta logística ou cálculo no checkout.",
+    "category": "frete",
+    "aliases": [
+      "prazo exato pelo cep",
+      "quanto chega no meu cep",
+      "previsão por cep",
+      "frete por cep",
+      "prazo garantido"
+    ]
+  },
+  {
+    "id": "regras-05",
+    "question": "O assistente pode informar senha da loja?",
+    "answer": "Não. O assistente não deve inventar nem fornecer senha da loja.",
+    "category": "seguranca",
+    "aliases": [
+      "qual a senha da loja",
+      "senha do site",
+      "acesso à loja",
+      "password da loja",
+      "entrar na loja"
+    ]
+  },
+  {
+    "id": "regras-06",
+    "question": "O assistente pode informar campanhas promocionais temporárias?",
+    "answer": "Não. O assistente não deve inventar campanhas promocionais temporárias não listadas na base. Ele só pode informar cupons e descontos documentados.",
+    "category": "cupons",
+    "aliases": [
+      "tem promoção hoje",
+      "campanha temporária",
+      "desconto relâmpago",
+      "promoção não listada",
+      "ofertas atuais"
+    ]
+  },
+  {
+    "id": "regras-07",
+    "question": "O assistente pode acessar dados pessoais ou histórico de compra?",
+    "answer": "Não. O assistente não deve inventar nem informar dados pessoais de clientes, pedidos reais ou histórico de compra. Casos com dados pessoais devem ser encaminhados para atendimento humano.",
+    "category": "privacidade",
+    "aliases": [
+      "meu histórico de compra",
+      "dados do cliente",
+      "pedido real",
+      "ver meus dados",
+      "consultar cpf"
+    ]
+  },
+  {
+    "id": "regras-08",
+    "question": "Quando o atendimento deve ser transferido para um humano?",
+    "answer": "O atendimento deve ser transferido para humano quando houver pedido específico, atraso de entrega, alteração após compra, confirmação manual de pagamento, falha de rastreio, solicitação fora da base, exceções comerciais, problema de cobrança, cancelamento excepcional, divergência entre sistema e cliente ou pedidos com dados pessoais.",
+    "category": "atendimento",
+    "aliases": [
+      "quando chamar humano",
+      "transferir atendimento",
+      "falar com atendente",
+      "preciso de suporte humano",
+      "quando o bot não resolve"
+    ]
+  },
+  {
+    "id": "compra-01",
+    "question": "Existe pedido mínimo?",
+    "answer": "Não há pedido mínimo. O cliente pode comprar diretamente pelo site.",
+    "category": "compra",
+    "aliases": [
+      "tem valor mínimo",
+      "pedido mínimo",
+      "compra mínima",
+      "valor mínimo para comprar",
+      "posso comprar qualquer valor"
+    ]
+  },
+  {
+    "id": "compra-02",
+    "question": "O cliente pode comprar diretamente pelo site?",
+    "answer": "Sim. O cliente pode comprar diretamente pelo site, aceitando os termos do checkout antes de concluir a compra.",
+    "category": "compra",
+    "aliases": [
+      "posso comprar no site",
+      "como comprar",
+      "compra pelo ecommerce",
+      "fechar pedido no site",
+      "comprar online"
+    ]
+  },
+  {
+    "id": "compra-03",
+    "question": "É necessário aceitar os termos do checkout?",
+    "answer": "Sim. Antes de concluir a compra, o cliente deve aceitar os termos do checkout.",
+    "category": "compra",
+    "aliases": [
+      "preciso aceitar termos",
+      "termos do checkout",
+      "aceite no checkout",
+      "finalizar compra precisa aceitar",
+      "termos para comprar"
+    ]
+  },
+  {
+    "id": "compra-04",
+    "question": "Quando o pedido entra em separação?",
+    "answer": "O pedido entra em separação após a confirmação do pagamento.",
+    "category": "compra",
+    "aliases": [
+      "quando separa o pedido",
+      "pedido em separação",
+      "depois do pagamento",
+      "quando começa o envio",
+      "separação após pagamento"
+    ]
+  },
+  {
+    "id": "pagamento-01",
+    "question": "Quais formas de pagamento são aceitas?",
+    "answer": "As formas de pagamento fictícias para teste são cartão de crédito em até 4x sem juros, cartão de crédito em até 10x com juros, PIX com 2% de desconto e boleto bancário à vista.",
+    "category": "pagamento",
+    "aliases": [
+      "como posso pagar",
+      "formas de pagamento",
+      "aceita pix",
+      "aceita cartão",
+      "aceita boleto"
+    ]
+  },
+  {
+    "id": "pagamento-02",
+    "question": "É possível parcelar no cartão sem juros?",
+    "answer": "Sim. O pagamento por cartão de crédito pode ser feito em até 4x sem juros.",
+    "category": "pagamento",
+    "aliases": [
+      "parcela sem juros",
+      "cartão sem juros",
+      "quantas vezes sem juros",
+      "4x sem juros",
+      "parcelamento sem juros"
+    ]
+  },
+  {
+    "id": "pagamento-03",
+    "question": "É possível parcelar no cartão com juros?",
+    "answer": "Sim. O pagamento por cartão de crédito pode ser feito em até 10x com juros.",
+    "category": "pagamento",
+    "aliases": [
+      "parcela com juros",
+      "10x no cartão",
+      "cartão com juros",
+      "parcelamento maior",
+      "até quantas vezes com juros"
+    ]
+  },
+  {
+    "id": "pagamento-04",
+    "question": "PIX tem desconto?",
+    "answer": "Sim. O pagamento por PIX tem 2% de desconto.",
+    "category": "pagamento",
+    "aliases": [
+      "desconto no pix",
+      "pix dá desconto",
+      "quanto desconto no pix",
+      "pagamento pix",
+      "pagar por pix"
+    ]
+  },
+  {
+    "id": "pagamento-05",
+    "question": "Boleto é aceito?",
+    "answer": "Sim. Boleto bancário à vista é uma forma de pagamento disponível na base de teste.",
+    "category": "pagamento",
+    "aliases": [
+      "aceita boleto",
+      "pagar no boleto",
+      "boleto bancário",
+      "boleto à vista",
+      "posso pagar por boleto"
+    ]
+  },
+  {
+    "id": "pagamento-06",
+    "question": "Quanto tempo o boleto pode levar para compensar?",
+    "answer": "O boleto pode levar até 48 horas para compensação.",
+    "category": "pagamento",
+    "aliases": [
+      "compensação do boleto",
+      "boleto demora quanto",
+      "boleto caiu quando",
+      "prazo do boleto",
+      "48 horas boleto"
+    ]
+  },
+  {
+    "id": "cupons-01",
+    "question": "Existe cupom para primeira compra?",
+    "answer": "Sim. Para primeira compra, o cupom fictício de teste é CHEGUEI7, com 7% de desconto.",
+    "category": "cupons",
+    "aliases": [
+      "cupom primeira compra",
+      "cupom CHEGUEI7",
+      "desconto novo cliente",
+      "primeira compra tem desconto",
+      "cupom de boas-vindas"
+    ]
+  },
+  {
+    "id": "cupons-02",
+    "question": "Qual cupom existe para compras acima de R$ 2.000,00?",
+    "answer": "Para compras acima de R$ 2.000,00, o cupom fictício de teste é ESPECIAL2, com 2% de desconto.",
+    "category": "cupons",
+    "aliases": [
+      "cupom 2000",
+      "desconto acima de dois mil",
+      "ESPECIAL2",
+      "compra acima de R$ 2.000",
+      "cupom progressivo 2"
+    ]
+  },
+  {
+    "id": "cupons-03",
+    "question": "Qual cupom existe para compras acima de R$ 3.000,00?",
+    "answer": "Para compras acima de R$ 3.000,00, o cupom fictício de teste é ESPECIAL3, com 3% de desconto.",
+    "category": "cupons",
+    "aliases": [
+      "cupom 3000",
+      "desconto acima de três mil",
+      "ESPECIAL3",
+      "compra acima de R$ 3.000",
+      "cupom progressivo 3"
+    ]
+  },
+  {
+    "id": "cupons-04",
+    "question": "Qual cupom existe para compras acima de R$ 4.000,00?",
+    "answer": "Para compras acima de R$ 4.000,00, o cupom fictício de teste é ESPECIAL4, com 4% de desconto.",
+    "category": "cupons",
+    "aliases": [
+      "cupom 4000",
+      "desconto acima de quatro mil",
+      "ESPECIAL4",
+      "compra acima de R$ 4.000",
+      "cupom progressivo 4"
+    ]
+  },
+  {
+    "id": "cupons-05",
+    "question": "Qual cupom existe para compras acima de R$ 5.000,00?",
+    "answer": "Para compras acima de R$ 5.000,00, o cupom fictício de teste é ESPECIAL5, com 5% de desconto.",
+    "category": "cupons",
+    "aliases": [
+      "cupom 5000",
+      "desconto acima de cinco mil",
+      "ESPECIAL5",
+      "compra acima de R$ 5.000",
+      "cupom progressivo 5"
+    ]
+  },
+  {
+    "id": "cupons-06",
+    "question": "Qual cupom existe para compras acima de R$ 6.000,00?",
+    "answer": "Para compras acima de R$ 6.000,00, o cupom fictício de teste é ESPECIAL6, com 6% de desconto.",
+    "category": "cupons",
+    "aliases": [
+      "cupom 6000",
+      "desconto acima de seis mil",
+      "ESPECIAL6",
+      "compra acima de R$ 6.000",
+      "cupom progressivo 6"
+    ]
+  },
+  {
+    "id": "cupons-07",
+    "question": "Qual cupom existe para compras acima de R$ 7.000,00?",
+    "answer": "Para compras acima de R$ 7.000,00, o cupom fictício de teste é ESPECIAL7, com 7% de desconto.",
+    "category": "cupons",
+    "aliases": [
+      "cupom 7000",
+      "desconto acima de sete mil",
+      "ESPECIAL7",
+      "compra acima de R$ 7.000",
+      "cupom progressivo 7"
+    ]
+  },
+  {
+    "id": "cupons-08",
+    "question": "Os cupons podem ser acumulados?",
+    "answer": "Não. O cupom de primeira compra não deve ser acumulado com cupom progressivo por valor. O cliente deve usar apenas o cupom mais vantajoso entre os disponíveis na base.",
+    "category": "cupons",
+    "aliases": [
+      "posso acumular cupom",
+      "usar dois cupons",
+      "cupom acumulativo",
+      "CHEGUEI7 acumula",
+      "cupom progressivo com primeira compra"
+    ]
+  },
+  {
+    "id": "cupons-09",
+    "question": "O que responder quando o cliente perguntar sobre um cupom não listado?",
+    "answer": "Se o cliente perguntar sobre um cupom não listado, o assistente deve dizer que não encontrou esse cupom na base.",
+    "category": "cupons",
+    "aliases": [
+      "cupom não existe",
+      "cupom inválido",
+      "não achei o cupom",
+      "cupom fora da base",
+      "tem outro cupom"
+    ]
+  },
+  {
+    "id": "cupons-10",
+    "question": "Qual cupom o cliente deve usar?",
+    "answer": "O cliente deve ser orientado a usar apenas o cupom mais vantajoso entre os cupons disponíveis na base, sem acumular cupom de primeira compra com cupom progressivo por valor.",
+    "category": "cupons",
+    "aliases": [
+      "melhor cupom",
+      "cupom mais vantajoso",
+      "qual desconto usar",
+      "qual cupom compensa",
+      "escolher cupom"
+    ]
+  },
+  {
+    "id": "indisponibilidade-01",
+    "question": "O que acontece se houver indisponibilidade após a compra?",
+    "answer": "Se houver indisponibilidade após a compra, a equipe pode oferecer substituição por item de mesmo valor ou crédito para compra futura. Em caso de exceção, o atendimento deve ser transferido para humano.",
+    "category": "compra",
+    "aliases": [
+      "produto indisponível depois da compra",
+      "comprei e não tem produto",
+      "sem disponibilidade",
+      "produto acabou",
+      "item indisponível"
+    ]
+  },
+  {
+    "id": "pedido-01",
+    "question": "É possível alterar o pedido após fechar a compra?",
+    "answer": "Para alteração de pedido após fechar a compra, o cliente deve entrar em contato imediatamente pelo WhatsApp. A alteração depende de o pedido ainda não ter sido faturado.",
+    "category": "compra",
+    "aliases": [
+      "alterar pedido",
+      "mudar pedido depois de comprar",
+      "trocar item do pedido",
+      "corrigir pedido",
+      "pedido já fechado"
+    ]
+  },
+  {
+    "id": "frete-01",
+    "question": "Quais métodos de envio estão disponíveis?",
+    "answer": "Os métodos de envio fictícios de teste são PAC, SEDEX, Jadlog e Azul Cargo.",
+    "category": "frete",
+    "aliases": [
+      "formas de envio",
+      "transportadoras",
+      "envia por sedex",
+      "tem jadlog",
+      "tem azul cargo"
+    ]
+  },
+  {
+    "id": "frete-02",
+    "question": "Tem frete grátis?",
+    "answer": "Sim. Há frete grátis em compras a partir de R$ 700,00 na modalidade PAC.",
+    "category": "frete",
+    "aliases": [
+      "frete grátis",
+      "valor para frete grátis",
+      "frete grátis a partir de quanto",
+      "PAC grátis",
+      "compra acima de 700"
+    ]
+  },
+  {
+    "id": "frete-03",
+    "question": "Como saber o valor exato do frete?",
+    "answer": "O valor exato do frete depende do CEP e deve ser calculado no checkout. O assistente não deve inventar valor exato sem consulta logística.",
+    "category": "frete",
+    "aliases": [
+      "calcular frete",
+      "quanto custa o frete",
+      "frete pelo cep",
+      "valor do envio",
+      "preço do frete"
+    ]
+  },
+  {
+    "id": "frete-04",
+    "question": "Qual é o prazo de entrega?",
+    "answer": "Os prazos de referência fictícios são: PAC de 5 a 45 dias úteis, SEDEX de 2 a 15 dias úteis, Jadlog de 2 a 30 dias úteis e Azul Cargo de 2 a 15 dias úteis. O prazo exato depende da consulta logística e não deve ser prometido sem validação.",
+    "category": "frete",
+    "aliases": [
+      "quando chega",
+      "quanto tempo demora",
+      "prazo de envio",
+      "prazo de entrega",
+      "tempo para entregar"
+    ]
+  },
+  {
+    "id": "frete-05",
+    "question": "Qual é o prazo de entrega por PAC?",
+    "answer": "O prazo de referência fictício para PAC é de 5 a 45 dias úteis.",
+    "category": "frete",
+    "aliases": [
+      "prazo pac",
+      "PAC demora quanto",
+      "entrega por PAC",
+      "tempo do PAC",
+      "envio PAC"
+    ]
+  },
+  {
+    "id": "frete-06",
+    "question": "Qual é o prazo de entrega por SEDEX?",
+    "answer": "O prazo de referência fictício para SEDEX é de 2 a 15 dias úteis.",
+    "category": "frete",
+    "aliases": [
+      "prazo sedex",
+      "SEDEX demora quanto",
+      "entrega por sedex",
+      "tempo do sedex",
+      "envio SEDEX"
+    ]
+  },
+  {
+    "id": "frete-07",
+    "question": "Qual é o prazo de entrega por Jadlog?",
+    "answer": "O prazo de referência fictício para Jadlog é de 2 a 30 dias úteis.",
+    "category": "frete",
+    "aliases": [
+      "prazo jadlog",
+      "Jadlog demora quanto",
+      "entrega por jadlog",
+      "tempo da jadlog",
+      "envio Jadlog"
+    ]
+  },
+  {
+    "id": "frete-08",
+    "question": "Qual é o prazo de entrega por Azul Cargo?",
+    "answer": "O prazo de referência fictício para Azul Cargo é de 2 a 15 dias úteis.",
+    "category": "frete",
+    "aliases": [
+      "prazo azul cargo",
+      "Azul Cargo demora quanto",
+      "entrega por azul",
+      "tempo da Azul Cargo",
+      "envio Azul Cargo"
+    ]
+  },
+  {
+    "id": "entrega-01",
+    "question": "Quando o pedido é postado?",
+    "answer": "Pedidos pagos são separados, conferidos e postados em até 2 dias úteis.",
+    "category": "entrega",
+    "aliases": [
+      "quando posta o pedido",
+      "prazo de postagem",
+      "pedido postado quando",
+      "envio após pagamento",
+      "separação e postagem"
+    ]
+  },
+  {
+    "id": "entrega-02",
+    "question": "O que fazer se a entrega atrasar?",
+    "answer": "Em caso de atraso na entrega, o assistente deve pedir o número do pedido ou CPF/CNPJ cadastrado, informar que será necessário atendimento humano e não prometer prazo de solução sem validação.",
+    "category": "entrega",
+    "aliases": [
+      "entrega atrasou",
+      "meu pedido não chegou",
+      "atraso na entrega",
+      "pedido atrasado",
+      "não recebi minha compra"
+    ]
+  },
+  {
+    "id": "entrega-03",
+    "question": "É possível mudar o frete após o pedido?",
+    "answer": "A mudança de frete após o pedido só pode ocorrer se o pedido ainda não tiver sido faturado e pode exigir pagamento da diferença.",
+    "category": "frete",
+    "aliases": [
+      "trocar frete",
+      "mudar transportadora",
+      "alterar envio",
+      "mudar de PAC para SEDEX",
+      "frete depois da compra"
+    ]
+  },
+  {
+    "id": "devolucoes-01",
+    "question": "A política de trocas e devoluções é real?",
+    "answer": "Não. A política de trocas e devoluções desta base é fictícia e criada para homologação.",
+    "category": "trocas_devolucoes",
+    "aliases": [
+      "política real",
+      "troca é de verdade",
+      "devolução homologação",
+      "política fictícia",
+      "regras de teste"
+    ]
+  },
+  {
+    "id": "devolucoes-02",
+    "question": "Qual é o prazo para devolução por arrependimento ou insatisfação?",
+    "answer": "O prazo de solicitação para devolução por arrependimento ou insatisfação é de até 7 dias corridos após o recebimento.",
+    "category": "trocas_devolucoes",
+    "aliases": [
+      "prazo de arrependimento",
+      "devolver por insatisfação",
+      "7 dias para devolver",
+      "quero devolver",
+      "arrependimento da compra"
+    ]
+  },
+  {
+    "id": "devolucoes-03",
+    "question": "Quais condições o produto deve atender para devolução?",
+    "answer": "Para devolução por arrependimento ou insatisfação, o produto deve estar sem sinais de uso e, quando aplicável, com embalagem original.",
+    "category": "trocas_devolucoes",
+    "aliases": [
+      "produto usado pode devolver",
+      "condição para devolução",
+      "embalagem original",
+      "sem sinais de uso",
+      "regras para devolver"
+    ]
+  },
+  {
+    "id": "devolucoes-04",
+    "question": "Quem paga o frete em devolução por insatisfação?",
+    "answer": "Em devoluções por insatisfação, o frete de postagem normalmente é do cliente. Na primeira compra, a loja pode liberar logística reversa como cortesia.",
+    "category": "trocas_devolucoes",
+    "aliases": [
+      "frete da devolução",
+      "quem paga para devolver",
+      "devolução por insatisfação frete",
+      "logística reversa",
+      "devolver produto grátis"
+    ]
+  },
+  {
+    "id": "devolucoes-05",
+    "question": "A primeira compra pode ter logística reversa como cortesia?",
+    "answer": "Sim. Na primeira compra, a loja pode liberar logística reversa como cortesia em devolução por insatisfação.",
+    "category": "trocas_devolucoes",
+    "aliases": [
+      "primeira compra devolução grátis",
+      "cortesia logística reversa",
+      "logística reversa primeira compra",
+      "devolver na primeira compra",
+      "frete grátis para devolução"
+    ]
+  },
+  {
+    "id": "reembolso-01",
+    "question": "Como funciona o reembolso por PIX?",
+    "answer": "No pagamento por PIX, o reembolso deve ser feito para chave do mesmo titular.",
+    "category": "reembolso",
+    "aliases": [
+      "reembolso pix",
+      "estorno por pix",
+      "pix volta como",
+      "chave pix reembolso",
+      "devolver dinheiro pix"
+    ]
+  },
+  {
+    "id": "reembolso-02",
+    "question": "Como funciona o reembolso por boleto?",
+    "answer": "No pagamento por boleto, o reembolso pode ser feito por conta indicada ou saldo interno, conforme fluxo de teste.",
+    "category": "reembolso",
+    "aliases": [
+      "reembolso boleto",
+      "estorno boleto",
+      "dinheiro do boleto",
+      "boleto devolução",
+      "saldo interno boleto"
+    ]
+  },
+  {
+    "id": "reembolso-03",
+    "question": "Como funciona o reembolso no cartão?",
+    "answer": "No pagamento por cartão, o reembolso ocorre por estorno conforme a operadora e pode aparecer em até 2 faturas.",
+    "category": "reembolso",
+    "aliases": [
+      "reembolso cartão",
+      "estorno cartão",
+      "quanto tempo estorno cartão",
+      "aparece na fatura",
+      "devolução no cartão"
+    ]
+  },
+  {
+    "id": "trocas-01",
+    "question": "Qual é o prazo para solicitar troca por defeito, avaria ou inconformidade?",
+    "answer": "O prazo para solicitar troca por defeito, avaria ou inconformidade é de até 7 dias corridos após a entrega.",
+    "category": "trocas_devolucoes",
+    "aliases": [
+      "produto com defeito",
+      "troca por avaria",
+      "prazo para troca",
+      "produto veio errado",
+      "produto inconforme"
+    ]
+  },
+  {
+    "id": "trocas-02",
+    "question": "O que o cliente deve enviar para solicitar troca por defeito?",
+    "answer": "Para troca por defeito, avaria ou inconformidade, o cliente deve enviar o número do pedido, o item e uma foto.",
+    "category": "trocas_devolucoes",
+    "aliases": [
+      "documentos para troca",
+      "foto do defeito",
+      "número do pedido troca",
+      "solicitar troca",
+      "o que enviar para trocar"
+    ]
+  },
+  {
+    "id": "trocas-03",
+    "question": "Quem paga o frete reverso em troca por defeito?",
+    "answer": "Em troca por defeito, avaria ou inconformidade, o frete reverso é pago pela loja.",
+    "category": "trocas_devolucoes",
+    "aliases": [
+      "frete reverso defeito",
+      "quem paga troca por defeito",
+      "devolver produto com defeito",
+      "frete da troca",
+      "loja paga frete reverso"
+    ]
+  },
+  {
+    "id": "trocas-04",
+    "question": "Quanto tempo leva a análise após o recebimento do produto?",
+    "answer": "Após o recebimento do produto, a análise ocorre em até 7 dias úteis.",
+    "category": "trocas_devolucoes",
+    "aliases": [
+      "prazo de análise",
+      "análise da troca",
+      "quanto tempo avalia defeito",
+      "7 dias úteis análise",
+      "depois que vocês recebem"
+    ]
+  },
+  {
+    "id": "trocas-05",
+    "question": "O que acontece se o defeito for confirmado?",
+    "answer": "Se o defeito for confirmado, a loja pode reenviar o produto, emitir voucher ou realizar reembolso, conforme o caso.",
+    "category": "trocas_devolucoes",
+    "aliases": [
+      "defeito confirmado",
+      "produto realmente com defeito",
+      "troca aprovada",
+      "voucher ou reembolso",
+      "reenviar produto"
+    ]
+  },
+  {
+    "id": "devolucoes-06",
+    "question": "Qual é o endereço fictício para devolução?",
+    "answer": "O endereço fictício para devolução é: Centro de Testes Logísticos - Rua Exemplo, 100 - São Paulo/SP - 01000-000.",
+    "category": "trocas_devolucoes",
+    "aliases": [
+      "endereço de devolução",
+      "para onde enviar devolução",
+      "local de devolução",
+      "rua exemplo 100",
+      "centro de testes logísticos"
+    ]
+  },
+  {
+    "id": "trocas-06",
+    "question": "O assistente pode aprovar troca automaticamente?",
+    "answer": "Não. O assistente não deve aprovar troca automaticamente sem seguir a política.",
+    "category": "regras_resposta",
+    "aliases": [
+      "aprovar troca automática",
+      "bot pode autorizar troca",
+      "troca aprovada pelo assistente",
+      "liberar troca",
+      "aprovação de troca"
+    ]
+  },
+  {
+    "id": "reembolso-04",
+    "question": "O assistente pode prometer reembolso imediato?",
+    "answer": "Não. O assistente não deve prometer reembolso imediato.",
+    "category": "regras_resposta",
+    "aliases": [
+      "reembolso imediato",
+      "dinheiro na hora",
+      "prometer estorno",
+      "estorno imediato",
+      "reembolso agora"
+    ]
+  },
+  {
+    "id": "catalogo-01",
+    "question": "Quais são os tipos predominantes no catálogo?",
+    "answer": "Os tipos predominantes no catálogo são TOYS com 497 itens, snowboard com 14 itens, Sem tipo com 3 itens, tipo 3 com 1 item, accessories com 1 item e giftcard com 1 item.",
+    "category": "catalogo",
+    "aliases": [
+      "categorias do catálogo",
+      "tipos de produto",
+      "quantos toys",
+      "catálogo tem snowboard",
+      "produtos por tipo"
+    ]
+  },
+  {
+    "id": "catalogo-02",
+    "question": "A maioria dos produtos pertence a qual categoria?",
+    "answer": "A maioria dos itens pertence à categoria TOYS.",
+    "category": "catalogo",
+    "aliases": [
+      "categoria principal",
+      "maioria dos itens",
+      "tipo mais comum",
+      "produtos toys",
+      "categoria predominante"
+    ]
+  },
+  {
+    "id": "catalogo-03",
+    "question": "Existem produtos de snowboard no catálogo?",
+    "answer": "Sim. Há uma pequena parcela de produtos do tipo snowboard no catálogo, com 14 itens.",
+    "category": "catalogo",
+    "aliases": [
+      "tem snowboard",
+      "produtos de neve",
+      "snowboards no catálogo",
+      "itens snowboard",
+      "categoria snowboard"
+    ]
+  },
+  {
+    "id": "catalogo-04",
+    "question": "Existem gift cards no catálogo?",
+    "answer": "Sim. Há item do tipo giftcard no catálogo, e alguns produtos possuem variantes, como gift card, ski wax e snowboard completo.",
+    "category": "catalogo",
+    "aliases": [
+      "tem gift card",
+      "vale presente",
+      "giftcard",
+      "cartão presente",
+      "produto com variante gift card"
+    ]
+  },
+  {
+    "id": "catalogo-05",
+    "question": "Todos os produtos da base podem ser recomendados?",
+    "answer": "Não. Alguns produtos existem na base, mas não devem ser recomendados porque não estão ativos ou publicados.",
+    "category": "catalogo",
+    "aliases": [
+      "posso recomendar tudo",
+      "produto não publicado",
+      "produto inativo",
+      "fora do catálogo público",
+      "item não ativo"
+    ]
+  },
+  {
+    "id": "catalogo-06",
+    "question": "Existe produto com compare_at_price?",
+    "answer": "Sim. A base informa que existe ao menos um produto com compare_at_price, útil para testar entendimento de promoção, mas não especifica qual produto neste documento.",
+    "category": "catalogo",
+    "aliases": [
+      "compare_at_price",
+      "produto em promoção",
+      "preço comparativo",
+      "preço antigo",
+      "teste de promoção"
+    ]
+  },
+  {
+    "id": "catalogo-07",
+    "question": "Existem produtos com variantes?",
+    "answer": "Sim. Alguns produtos possuem variantes, como gift card, ski wax e snowboard completo.",
+    "category": "catalogo",
+    "aliases": [
+      "produtos com variação",
+      "variantes do produto",
+      "opções do produto",
+      "gift card variante",
+      "snowboard completo variante"
+    ]
+  },
+  {
+    "id": "regras-09",
+    "question": "O que responder quando a base não trouxer uma informação?",
+    "answer": "Quando a base não trouxer a resposta, o assistente deve dizer que não encontrou a informação na base, sem inventar dados.",
+    "category": "regras_resposta",
+    "aliases": [
+      "não sei responder",
+      "informação não encontrada",
+      "fora da base",
+      "não tem no documento",
+      "sem informação"
+    ]
+  },
+  {
+    "id": "regras-10",
+    "question": "O que responder quando um item estiver fora do catálogo público?",
+    "answer": "Quando um item estiver fora do catálogo público, o assistente deve deixar isso claro e não recomendar produtos que não estejam ativos ou publicados.",
+    "category": "regras_resposta",
+    "aliases": [
+      "produto fora do catálogo",
+      "item não publicado",
+      "produto oculto",
+      "não recomendar produto",
+      "produto indisponível no catálogo público"
+    ]
+  },
+  {
+    "id": "regras-11",
+    "question": "O assistente pode dizer que verificou sistemas externos?",
+    "answer": "Não. O assistente não deve dizer que verificou sistemas externos se isso não ocorreu.",
+    "category": "regras_resposta",
+    "aliases": [
+      "verificou no sistema",
+      "consulta externa",
+      "sistema externo",
+      "dizer que consultou",
+      "validou no sistema"
+    ]
+  },
+  {
+    "id": "regras-12",
+    "question": "O assistente pode misturar informações de produto com políticas sem evidência?",
+    "answer": "Não. O assistente não deve misturar informações de produto com políticas sem evidência na base.",
+    "category": "regras_resposta",
+    "aliases": [
+      "misturar produto e política",
+      "sem evidência",
+      "inventar regra de produto",
+      "associar política ao produto",
+      "alucinar política"
+    ]
+  },
+  {
+    "id": "atendimento-03",
+    "question": "O que fazer em caso de problema de cobrança?",
+    "answer": "Problemas de cobrança devem ser transferidos para atendimento humano.",
+    "category": "atendimento",
+    "aliases": [
+      "cobrança errada",
+      "problema no pagamento",
+      "cobrou duas vezes",
+      "divergência de cobrança",
+      "falha de cobrança"
+    ]
+  },
+  {
+    "id": "atendimento-04",
+    "question": "O que fazer em caso de cancelamento excepcional?",
+    "answer": "Casos de cancelamento excepcional devem ser transferidos para atendimento humano.",
+    "category": "atendimento",
+    "aliases": [
+      "cancelar pedido",
+      "cancelamento fora da regra",
+      "cancelamento excepcional",
+      "quero cancelar",
+      "cancelamento especial"
+    ]
+  },
+  {
+    "id": "atendimento-05",
+    "question": "O que fazer em caso de divergência entre sistema e cliente?",
+    "answer": "Divergências entre sistema e cliente devem ser transferidas para atendimento humano.",
+    "category": "atendimento",
+    "aliases": [
+      "divergência no sistema",
+      "cliente diz diferente",
+      "informação não bate",
+      "erro no sistema",
+      "dados divergentes"
+    ]
+  },
+  {
+    "id": "atendimento-06",
+    "question": "O que fazer quando o cliente informa dados pessoais?",
+    "answer": "Pedidos com dados pessoais devem ser transferidos para atendimento humano, sem inventar ou expor informações pessoais.",
+    "category": "privacidade",
+    "aliases": [
+      "cliente mandou CPF",
+      "dados pessoais no chat",
+      "informações pessoais",
+      "pedido com cpf",
+      "dados sensíveis do cliente"
+    ]
+  }
+]

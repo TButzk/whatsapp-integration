@@ -1,0 +1,1 @@
+"""Service layer for the local-first backend."""

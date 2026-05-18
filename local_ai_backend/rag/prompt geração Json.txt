@@ -1,0 +1,8 @@
+Com base neste documento [cole o conteúdo], gere todos os pares
+pergunta/resposta possíveis no formato JSON abaixo.
+Para cada par inclua variações da pergunta em "aliases".
+
+[{"id":"frete-01","question":"Qual o prazo de entrega?",
+  "answer":"Resposta completa e definitiva aqui.",
+  "category":"frete",
+  "aliases":["quando chega","quanto tempo demora","prazo de envio"]}]
